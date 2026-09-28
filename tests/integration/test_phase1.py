@@ -51,10 +51,14 @@ async def test_catalog_session_and_message_idempotence():
             assert conflict.status_code == 409
 
             concurrent_body = {"client_message_id": f"parallel-{suffix}", "content": "只运行一次"}
+            parallel_session = await client.post(
+                "/api/sessions", json={"agent_id": agent.json()["id"]}
+            )
             requests = await asyncio.gather(
                 *[
                     client.post(
-                        f"/api/sessions/{session.json()['id']}/messages", json=concurrent_body
+                        f"/api/sessions/{parallel_session.json()['id']}/messages",
+                        json=concurrent_body,
                     )
                     for _ in range(5)
                 ]

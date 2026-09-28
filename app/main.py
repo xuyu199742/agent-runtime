@@ -1,9 +1,10 @@
+import json
 from typing import Annotated
 from uuid import uuid4
 
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import select, text
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.catalog import agent_out, save_agent
 from app.application.chat import create_session, submit_message
+from app.application.runs import cancel_pending
 from app.config import get_settings
 from app.infrastructure.database import (
     AgentDefinition,
@@ -21,6 +23,8 @@ from app.infrastructure.database import (
     ToolDefinition,
     get_db,
 )
+from app.infrastructure.events import EventStore
+from app.infrastructure.redis_queue import RunQueue
 from app.transport.schemas import (
     AgentIn,
     AgentOut,
@@ -160,11 +164,18 @@ async def get_session(session_id: str, db: Db):
 
 @app.post("/api/sessions/{session_id}/messages", response_model=MessageAccepted, status_code=202)
 async def add_message(session_id: str, body: MessageIn, db: Db):
-    return await submit_message(db, session_id, get_settings().dev_user_id, body)
+    accepted = await submit_message(db, session_id, get_settings().dev_user_id, body)
+    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        await RunQueue(redis).enqueue(accepted.run_id)
+    except RedisError:
+        log.warning("Run 入队失败，等待 Worker 补投", run_id=accepted.run_id)
+    finally:
+        await redis.aclose()
+    return accepted
 
 
-@app.get("/api/runs/{run_id}", response_model=RunOut)
-async def get_run(run_id: str, db: Db):
+async def visible_run(db: AsyncSession, run_id: str) -> Run:
     run = await db.get(Run, run_id)
     if run is None:
         raise HTTPException(404, detail="Run 不存在")
@@ -172,3 +183,84 @@ async def get_run(run_id: str, db: Db):
     if session.user_id != get_settings().dev_user_id:
         raise HTTPException(404, detail="Run 不存在")
     return run
+
+
+@app.get("/api/runs/{run_id}", response_model=RunOut)
+async def get_run(run_id: str, db: Db):
+    return await visible_run(db, run_id)
+
+
+@app.post("/api/runs/{run_id}/cancel", response_model=RunOut)
+async def cancel_run(run_id: str, db: Db):
+    run = await visible_run(db, run_id)
+    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        if run.status == "PENDING" and await cancel_pending(db, run_id):
+            try:
+                await EventStore(redis).publish(run_id, "run.cancelled", {})
+            except RedisError:
+                log.warning("取消事件投递失败，可从 Run 状态恢复", run_id=run_id)
+        elif run.status == "RUNNING":
+            try:
+                await redis.set(f"run:{run_id}:cancel", "1", ex=3600)
+            except RedisError:
+                raise HTTPException(503, detail="取消信号暂时无法送达，请重试") from None
+    finally:
+        await redis.aclose()
+    await db.refresh(run)
+    return run
+
+
+@app.get("/api/runs/{run_id}/events")
+async def stream_events(
+    run_id: str,
+    db: Db,
+    after: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
+    run = await visible_run(db, run_id)
+    if after == 0 and last_event_id:
+        try:
+            after = max(0, int(last_event_id))
+        except ValueError:
+            raise HTTPException(422, detail="Last-Event-ID 无效") from None
+    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    events = EventStore(redis)
+    first = await events.first_sequence(run_id)
+    if after > 0 and (first is None or after < first - 1):
+        await redis.aclose()
+        raise HTTPException(410, detail="事件已过期，请读取 Run 最终状态")
+    await db.commit()
+
+    async def generate():
+        cursor = after
+        try:
+            while True:
+                batch = await events.wait_after(run_id, cursor, block_ms=1000)
+                for event in batch:
+                    cursor = event.sequence
+                    payload = json.dumps(event.as_dict(), ensure_ascii=False)
+                    yield f"id: {event.sequence}\nevent: {event.type}\ndata: {payload}\n\n"
+                    if event.type in {"run.completed", "run.failed", "run.cancelled"}:
+                        return
+                if not batch:
+                    await db.refresh(run)
+                    status = run.status
+                    await db.commit()
+                    if status in {"COMPLETED", "FAILED", "CANCELLED"}:
+                        payload = json.dumps(
+                            {
+                                "type": "run.snapshot",
+                                "run_id": run_id,
+                                "sequence": cursor,
+                                "data": {"status": status},
+                            }
+                        )
+                        yield f"event: run.snapshot\ndata: {payload}\n\n"
+                        return
+        finally:
+            await redis.aclose()
+
+    return StreamingResponse(
+        generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
+    )

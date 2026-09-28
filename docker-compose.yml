@@ -30,6 +30,7 @@ services:
         condition: service_healthy
   api:
     build: .
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
@@ -43,6 +44,7 @@ services:
         condition: service_healthy
   worker:
     build: .
+    restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file: .env
     environment:

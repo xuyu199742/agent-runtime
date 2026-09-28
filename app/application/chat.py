@@ -49,6 +49,15 @@ async def submit_message(
     if previous is not None:
         return previous
 
+    active = await db.scalar(
+        select(Run.id).where(
+            Run.session_id == session_id,
+            Run.status.in_(["PENDING", "RUNNING", "INTERRUPTED"]),
+        )
+    )
+    if active is not None:
+        raise HTTPException(409, detail="Session 中已有执行中的 Run")
+
     message = Message(
         id=new_id(),
         session_id=session_id,

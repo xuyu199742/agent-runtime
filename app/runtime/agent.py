@@ -41,6 +41,7 @@ class LangChainAgentRuntime:
             checkpointer=checkpointer,
         )
         self.max_steps = max_steps
+        self.has_checkpointer = checkpointer is not None
 
     async def run(
         self,
@@ -50,12 +51,22 @@ class LangChainAgentRuntime:
         should_cancel: CancelCheck,
         session_id: str | None = None,
         user_id: str | None = None,
+        resume: bool = False,
     ) -> str:
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": self.max_steps * 2 + 2}
+        input_state = {"messages": list(messages)}
+        if resume and self.has_checkpointer:
+            state = await self.graph.aget_state(config)
+            if state.values:
+                if not state.next:
+                    for message in reversed(state.values.get("messages", [])):
+                        if isinstance(message, AIMessage) and not message.tool_calls:
+                            return message.text
+                input_state = None
         answer = ""
         model_step = None
         async for mode, chunk in self.graph.astream(
-            {"messages": list(messages)},
+            input_state,
             config=config,
             context={"run_id": run_id, "session_id": session_id, "user_id": user_id},
             stream_mode=["messages", "updates"],
