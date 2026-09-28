@@ -1,19 +1,26 @@
-from fastapi import HTTPException
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.infrastructure.database import AgentDefinition, Message, ModelConfig, Run, Session, new_id
-from app.transport.schemas import MessageAccepted, MessageIn
+
+
+@dataclass(frozen=True)
+class AcceptedMessage:
+    message_id: str
+    run_id: str
 
 
 async def create_session(db: AsyncSession, agent_id: str, user_id: str) -> Session:
     agent = await db.get(AgentDefinition, agent_id)
     if agent is None or not agent.enabled:
-        raise HTTPException(422, detail="Agent 不存在或未启用")
+        raise InvalidConfiguration("Agent 不存在或未启用")
     model = await db.get(ModelConfig, agent.model_id)
     if model is None or not model.enabled:
-        raise HTTPException(422, detail="模型不存在或未启用")
+        raise InvalidConfiguration("模型不存在或未启用")
     session = Session(agent_id=agent_id, user_id=user_id)
     db.add(session)
     await db.commit()
@@ -22,29 +29,33 @@ async def create_session(db: AsyncSession, agent_id: str, user_id: str) -> Sessi
 
 
 async def submit_message(
-    db: AsyncSession, session_id: str, user_id: str, body: MessageIn
-) -> MessageAccepted:
+    db: AsyncSession, session_id: str, user_id: str, client_message_id: str, content: str
+) -> AcceptedMessage:
     session = await db.get(Session, session_id)
     if session is None or session.user_id != user_id:
-        raise HTTPException(404, detail="Session 不存在")
+        raise NotFound("Session 不存在")
 
-    async def existing() -> MessageAccepted | None:
+    async def existing() -> AcceptedMessage | None:
         row = (
             await db.execute(
                 select(Message, Run)
                 .join(Run, Run.message_id == Message.id)
-                .where(
-                    Message.user_id == user_id, Message.client_message_id == body.client_message_id
-                )
+                .where(Message.user_id == user_id, Message.client_message_id == client_message_id)
             )
         ).first()
         if row is None:
             return None
         message, run = row
-        if message.session_id != session_id or message.content != body.content:
-            raise HTTPException(409, detail="client_message_id 已用于其他消息")
-        return MessageAccepted(message_id=message.id, run_id=run.id)
+        if message.session_id != session_id or message.content != content:
+            raise Conflict("client_message_id 已用于其他消息")
+        return AcceptedMessage(message_id=message.id, run_id=run.id)
 
+    previous = await existing()
+    if previous is not None:
+        return previous
+
+    # 同一 Session 的不同请求串行创建 Run；拿锁后再次检查幂等键。
+    await db.execute(select(Session.id).where(Session.id == session_id).with_for_update())
     previous = await existing()
     if previous is not None:
         return previous
@@ -56,15 +67,15 @@ async def submit_message(
         )
     )
     if active is not None:
-        raise HTTPException(409, detail="Session 中已有执行中的 Run")
+        raise Conflict("Session 中已有执行中的 Run")
 
     message = Message(
         id=new_id(),
         session_id=session_id,
         user_id=user_id,
         role="user",
-        content=body.content,
-        client_message_id=body.client_message_id,
+        content=content,
+        client_message_id=client_message_id,
     )
     run = Run(id=new_id(), session_id=session_id, message_id=message.id, status="PENDING")
     db.add_all([message, run])
@@ -76,4 +87,4 @@ async def submit_message(
         if previous is not None:
             return previous
         raise
-    return MessageAccepted(message_id=message.id, run_id=run.id)
+    return AcceptedMessage(message_id=message.id, run_id=run.id)

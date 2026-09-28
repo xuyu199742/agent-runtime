@@ -1,0 +1,53 @@
+# Agent Server V0.1
+
+独立的 Python Agent 服务端。业务配置在 PostgreSQL，异步 Run 和 SSE 实时事件由 Redis Streams 协调，Agent 执行使用 LangChain `create_agent` 与 LangGraph PostgreSQL checkpoint。
+
+## 本地启动
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+curl http://localhost:8000/ready
+```
+
+接口文档：`http://localhost:8000/docs`。`/health` 只检查 API 进程；`/ready` 检查 PostgreSQL 与 Redis。API 与 Worker 共用一个 Dockerfile，使用不同启动命令。PostgreSQL 和 Redis 数据分别保存在 Docker volume 中。
+
+模型密钥只放在 API/Worker 环境变量中，例如 `OPENAI_API_KEY`；数据库的 `api_key_env` 只保存变量名。使用 OpenAI-compatible 本地服务时，可通过 `base_url` 指向兼容接口，未设置密钥时使用占位值。HTTP Tool 默认关闭，只有服务端 `HTTP_TOOL_ALLOWED_HOSTS` 与 Tool 配置中的 `allowed_hosts` 同时包含目标域名时才启用，并只执行 HTTPS GET。
+模型上下文默认取最近 30 条 Session 消息，可通过 `CONTEXT_MAX_MESSAGES` 调整；完整历史仍保留在 PostgreSQL。
+
+## 发起一次对话
+
+1. `POST /api/models` 创建模型配置。
+2. `POST /api/tools` 创建 `calculator`（`type=NATIVE`）。
+3. `POST /api/agents` 绑定模型与 Tool。
+4. `POST /api/sessions` 创建 Session。
+5. `POST /api/sessions/{id}/messages` 发送含 `client_message_id` 的消息，立即得到 `message_id` 和 `run_id`。
+6. `GET /api/runs/{id}/events` 订阅 SSE；断线后以 `?after=最后收到的序号` 或 `Last-Event-ID` 继续。
+7. `GET /api/runs/{id}` 查询持久状态与最终 `answer`；`POST /api/runs/{id}/cancel` 主动取消。
+
+示例创建脚本见 [examples/bootstrap_demo.py](examples/bootstrap_demo.py)。完整 API、执行流程和错误语义见 [docs/architecture.md](docs/architecture.md)。
+V0.1 的测试命令与端到端结果见 [docs/verification.md](docs/verification.md)。
+
+## 开发和测试
+
+```bash
+uv sync --group dev
+docker compose up -d postgres redis
+uv run alembic upgrade head
+docker compose exec -T postgres createdb -U agent agent_test
+DATABASE_URL=postgresql+asyncpg://agent:agent@localhost:5434/agent_test uv run alembic upgrade head
+TEST_DATABASE_URL=postgresql+asyncpg://agent:agent@localhost:5434/agent_test \
+TEST_CHECKPOINT_DATABASE_URL=postgresql://agent:agent@localhost:5434/agent_test \
+TEST_REDIS_URL=redis://localhost:6380/1 \
+uv run python -m pytest tests -q
+uv run ruff check .
+uv run ruff format --check .
+```
+
+`tests/support/openai_stub.py` 是本地端到端测试桩，可用 `uv run uvicorn openai_stub:app --app-dir tests/support --host 0.0.0.0 --port 18001` 启动；Docker 内模型 `base_url` 设为 `http://host.docker.internal:18001/v1`。真实模型烟测需要自行提供可用端点和凭证。
+
+## 部署边界
+
+V0.1 采用固定的本地开发 `user_id`，没有登录、租户隔离和公网访问控制。**不要直接暴露到公网。** `client_message_id` 在同一用户下唯一，重复提交返回原 `message_id/run_id`。同一 Session 一次只允许一个活跃 Run。
+
+Redis 事件流在 Run 终态后保留 24 小时；超期重连返回 410，客户端应读取 `GET /api/runs/{id}`。PostgreSQL 保存最终回答与状态，Redis 清空不影响长期数据。Redis Streams 至少一次交付，内置 Tool 无业务副作用；新增写操作 Tool 时必须单独设计幂等键。Worker 租约与 checkpoint 支持崩溃后的重新领取；进程级恢复不保证外部副作用的恰好一次执行。

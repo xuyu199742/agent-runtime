@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6380/0"
     dev_user_id: str = "local-dev-user"
     http_tool_allowed_hosts: str = ""
+    context_max_messages: int = Field(default=30, ge=1, le=100)
     log_level: str = "INFO"
 
 

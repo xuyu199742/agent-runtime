@@ -130,3 +130,35 @@ async def test_model_failure_propagates_to_run_boundary():
 
     with pytest.raises(RuntimeError, match="模型暂不可用"):
         await runtime.run("failed-model", [HumanMessage(content="你好")], emit, not_cancelled)
+
+
+async def test_agent_handles_multiple_tool_calls_in_one_turn():
+    model = ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "calculator", "args": {"expression": "1+1"}, "id": "call-a"},
+                    {"name": "calculator", "args": {"expression": "2+2"}, "id": "call-b"},
+                ],
+            ),
+            AIMessage(content="分别是 2 和 4"),
+        ]
+    )
+    events = []
+
+    async def emit(kind, data):
+        events.append((kind, data))
+
+    async def not_cancelled():
+        return False
+
+    runtime = LangChainAgentRuntime(
+        model=model, tools=[calculator_tool()], system_prompt="", max_steps=5
+    )
+    answer = await runtime.run(
+        "multi-tool", [HumanMessage(content="分别计算")], emit, not_cancelled
+    )
+    assert answer == "分别是 2 和 4"
+    assert [kind for kind, _ in events].count("tool.started") == 2
+    assert [kind for kind, _ in events].count("tool.completed") == 2

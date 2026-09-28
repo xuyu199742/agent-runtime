@@ -20,6 +20,10 @@ _OPERATORS = {
 }
 
 
+class ToolConfigurationError(ValueError):
+    pass
+
+
 def calculate(expression: str) -> str:
     if len(expression) > 200:
         raise ValueError("表达式过长")
@@ -82,7 +86,9 @@ def http_tool(allowed_hosts: set[str], timeout_seconds: float = 10) -> BaseTool:
         ):
             raise ValueError("HTTP Tool 只允许白名单中的 HTTPS 地址")
         await _check_public_host(host)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            follow_redirects=False, timeout=timeout_seconds, trust_env=False
+        ) as client:
             response = await client.get(url)
             response.raise_for_status()
             return response.text[:20000]
@@ -96,7 +102,7 @@ def http_tool(allowed_hosts: set[str], timeout_seconds: float = 10) -> BaseTool:
 
 def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
     native = {"echo": echo, "calculator": calculator}
-    allowed_hosts = {
+    server_allowed_hosts = {
         host.strip().lower()
         for host in get_settings().http_tool_allowed_hosts.split(",")
         if host.strip()
@@ -104,11 +110,23 @@ def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
     result = []
     for definition in definitions:
         if not definition.enabled:
-            raise ValueError(f"工具未启用: {definition.name}")
+            raise ToolConfigurationError(f"工具未启用: {definition.name}")
         if definition.type == "NATIVE" and definition.name in native:
             result.append(native[definition.name])
-        elif definition.type == "HTTP" and definition.name == "http_request" and allowed_hosts:
-            result.append(http_tool(allowed_hosts))
+        elif definition.type == "HTTP" and definition.name == "http_request":
+            config = definition.config or {}
+            requested_hosts = config.get("allowed_hosts", [])
+            if not isinstance(requested_hosts, list) or not all(
+                isinstance(host, str) for host in requested_hosts
+            ):
+                raise ToolConfigurationError("HTTP 工具白名单配置无效")
+            allowed_hosts = server_allowed_hosts.intersection(
+                host.lower() for host in requested_hosts
+            )
+            timeout = config.get("timeout_seconds", 10)
+            if not allowed_hosts or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 30:
+                raise ToolConfigurationError("HTTP 工具未设置有效的白名单与超时")
+            result.append(http_tool(allowed_hosts, timeout_seconds=float(timeout)))
         else:
-            raise ValueError(f"不支持的工具配置: {definition.name}")
+            raise ToolConfigurationError(f"不支持的工具配置: {definition.name}")
     return result

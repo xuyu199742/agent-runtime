@@ -43,3 +43,4 @@ class RunQueue:
 
     async def ack(self, stream_id: str) -> None:
         await self.redis.xack(self.stream, self.group, stream_id)
+        await self.redis.xdel(self.stream, stream_id)

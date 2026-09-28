@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Out(BaseModel):
@@ -17,6 +17,20 @@ class ModelIn(BaseModel):
     config: dict = Field(default_factory=dict)
     enabled: bool = True
 
+    @model_validator(mode="after")
+    def validate_runtime_options(self):
+        if self.provider == "openai-compatible" and not self.base_url:
+            raise ValueError("OpenAI-compatible 模型需要 base_url")
+        if set(self.config) - {"timeout_seconds", "max_retries", "temperature"}:
+            raise ValueError("模型 config 包含不支持的配置项")
+        timeout = self.config.get("timeout_seconds", 60)
+        retries = self.config.get("max_retries", 1)
+        if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 300:
+            raise ValueError("timeout_seconds 必须在 1 到 300 秒之间")
+        if not isinstance(retries, int) or not 0 <= retries <= 5:
+            raise ValueError("max_retries 必须在 0 到 5 之间")
+        return self
+
 
 class ModelOut(ModelIn, Out):
     id: str
@@ -28,6 +42,25 @@ class ToolIn(BaseModel):
     type: Literal["NATIVE", "HTTP"]
     config: dict = Field(default_factory=dict)
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_tool_options(self):
+        if self.type == "NATIVE" and (self.name not in {"echo", "calculator"} or self.config):
+            raise ValueError("不支持的 Native Tool 配置")
+        if self.type == "HTTP":
+            if self.name != "http_request" or set(self.config) - {
+                "allowed_hosts",
+                "timeout_seconds",
+            }:
+                raise ValueError("不支持的 HTTP Tool 配置")
+            hosts = self.config.get("allowed_hosts", [])
+            if (
+                not isinstance(hosts, list)
+                or not hosts
+                or not all(isinstance(host, str) and host for host in hosts)
+            ):
+                raise ValueError("HTTP Tool 需要 allowed_hosts 域名列表")
+        return self
 
 
 class ToolOut(ToolIn, Out):
@@ -83,6 +116,7 @@ class RunOut(Out):
     session_id: str
     message_id: str
     answer_message_id: str | None
+    answer: str | None = None
     status: str
     error_code: str | None
     error_message: str | None

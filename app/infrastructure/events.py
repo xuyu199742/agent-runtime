@@ -83,3 +83,7 @@ class EventStore:
     async def first_sequence(self, run_id: str) -> int | None:
         rows = await self.redis.xrange(self.key(run_id), count=1)
         return int(rows[0][0].split("-", 1)[0]) if rows else None
+
+    async def last_sequence(self, run_id: str) -> int | None:
+        rows = await self.redis.xrevrange(self.key(run_id), count=1)
+        return int(rows[0][0].split("-", 1)[0]) if rows else None

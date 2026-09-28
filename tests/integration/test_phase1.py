@@ -31,10 +31,53 @@ async def test_catalog_session_and_message_idempotence():
                 json={"name": f"model-{suffix}", "provider": "openai", "model_name": "test-model"},
             )
             assert model.status_code == 201, model.text
+            secret = await client.post(
+                "/api/models",
+                json={
+                    "name": f"secret-{suffix}",
+                    "provider": "openai",
+                    "model_name": "fake",
+                    "config": {"api_key": "should-not-store"},
+                },
+            )
+            assert secret.status_code == 422
+            assert "should-not-store" not in secret.text
+
+            spare_model = await client.post(
+                "/api/models",
+                json={"name": f"spare-{suffix}", "provider": "openai", "model_name": "first"},
+            )
+            updated_model = await client.put(
+                f"/api/models/{spare_model.json()['id']}",
+                json={"name": f"spare-{suffix}", "provider": "openai", "model_name": "second"},
+            )
+            assert updated_model.json()["model_name"] == "second"
+            assert (
+                await client.delete(f"/api/models/{spare_model.json()['id']}")
+            ).status_code == 204
+            assert (await client.get(f"/api/models/{spare_model.json()['id']}")).status_code == 404
+
+            spare_tool = await client.post("/api/tools", json={"name": "echo", "type": "NATIVE"})
+            if spare_tool.status_code == 201:
+                changed_tool = await client.put(
+                    f"/api/tools/{spare_tool.json()['id']}",
+                    json={"name": "echo", "type": "NATIVE", "description": "回显"},
+                )
+                assert changed_tool.json()["description"] == "回显"
+                assert (
+                    await client.delete(f"/api/tools/{spare_tool.json()['id']}")
+                ).status_code == 204
             agent = await client.post(
                 "/api/agents", json={"name": f"agent-{suffix}", "model_id": model.json()["id"]}
             )
             assert agent.status_code == 201, agent.text
+            spare_agent = await client.post(
+                "/api/agents",
+                json={"name": f"spare-agent-{suffix}", "model_id": model.json()["id"]},
+            )
+            assert (
+                await client.delete(f"/api/agents/{spare_agent.json()['id']}")
+            ).status_code == 204
             session = await client.post("/api/sessions", json={"agent_id": agent.json()["id"]})
             assert session.status_code == 201, session.text
             body = {"client_message_id": f"message-{suffix}", "content": "你好"}
@@ -65,6 +108,23 @@ async def test_catalog_session_and_message_idempotence():
             )
             assert {response.status_code for response in requests} == {202}
             assert len({response.json()["run_id"] for response in requests}) == 1
+
+            separate_session = await client.post(
+                "/api/sessions", json={"agent_id": agent.json()["id"]}
+            )
+            distinct = await asyncio.gather(
+                *[
+                    client.post(
+                        f"/api/sessions/{separate_session.json()['id']}/messages",
+                        json={
+                            "client_message_id": f"distinct-{suffix}-{index}",
+                            "content": "并发消息",
+                        },
+                    )
+                    for index in range(2)
+                ]
+            )
+            assert sorted(response.status_code for response in distinct) == [202, 409]
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()

@@ -2,9 +2,10 @@ import asyncio
 import socket
 from datetime import UTC, datetime
 
+import httpx
+import openai
 import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.errors import GraphRecursionError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import select
@@ -20,13 +21,15 @@ from app.infrastructure.database import (
     session_factory,
 )
 from app.infrastructure.events import EventStore
+from app.infrastructure.logging import configure_logging
 from app.infrastructure.redis_queue import RunQueue
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled
 from app.runtime.context import build_context
 from app.runtime.factory import build_model
-from app.runtime.tools import build_tools
+from app.runtime.tools import ToolConfigurationError, build_tools
 
 log = structlog.get_logger()
+configure_logging()
 
 
 async def safe_publish(events: EventStore, run_id: str, kind: str, data: dict) -> None:
@@ -70,6 +73,14 @@ async def run_agent(
             ).all()
         )
 
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        request_id=run_id,
+        run_id=run_id,
+        session_id=session.id,
+        user_id=session.user_id,
+    )
+
     if not resumed:
         await safe_publish(events, run_id, "run.started", {})
     runtime = LangChainAgentRuntime(
@@ -88,7 +99,7 @@ async def run_agent(
 
     return await runtime.run(
         run_id,
-        build_context(history),
+        build_context(history, max_messages=get_settings().context_max_messages),
         emit,
         should_cancel,
         session_id=session.id,
@@ -119,8 +130,11 @@ async def execute_run(
         if cancelled:
             await safe_publish(events, run_id, "run.cancelled", {})
     except Exception as exc:
-        code = "TIMEOUT" if isinstance(exc, TimeoutError) else "MODEL_ERROR"
-        if isinstance(exc, GraphRecursionError):
+        if isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
+            code = "TIMEOUT"
+        elif isinstance(exc, ToolConfigurationError):
+            code = "TOOL_ERROR"
+        else:
             code = "MODEL_ERROR"
         log.exception("Run 执行失败", run_id=run_id, error_type=type(exc).__name__)
         async with session_factory() as db:

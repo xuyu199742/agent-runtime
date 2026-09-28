@@ -1,3 +1,7 @@
+x-app-image: &app-image
+  image: agent-server:0.1
+  build: .
+
 services:
   postgres:
     image: postgres:16
@@ -5,7 +9,7 @@ services:
       POSTGRES_USER: agent
       POSTGRES_PASSWORD: agent
       POSTGRES_DB: agent
-    ports: ["5434:5432"]
+    ports: ["127.0.0.1:5434:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
@@ -14,14 +18,14 @@ services:
   redis:
     image: redis:7
     command: ["redis-server", "--appendonly", "yes"]
-    ports: ["6380:6379"]
+    ports: ["127.0.0.1:6380:6379"]
     volumes: ["redis_data:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       retries: 20
   migrate:
-    build: .
+    <<: *app-image
     command: ["alembic", "upgrade", "head"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
@@ -29,21 +33,21 @@ services:
       postgres:
         condition: service_healthy
   api:
-    build: .
+    <<: *app-image
     restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
       CHECKPOINT_DATABASE_URL: postgresql://agent:agent@postgres:5432/agent
       REDIS_URL: redis://redis:6379/0
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
   worker:
-    build: .
+    <<: *app-image
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file: .env

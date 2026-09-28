@@ -113,6 +113,9 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
             assert "event: tool.completed" in events.text
             assert "event: run.completed" in events.text
             assert "答案是 4" in events.text
+            await redis.delete(EventStore.key(run_id), EventStore.sequence_key(run_id))
+            durable_run = await client.get(f"/api/runs/{run_id}")
+            assert durable_run.json()["answer"] == "答案是 4"
 
             monkeypatch.setattr(
                 worker, "build_model", lambda _config: (_ for _ in ()).throw(ValueError("缺少凭证"))

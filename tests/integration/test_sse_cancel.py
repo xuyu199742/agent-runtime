@@ -66,6 +66,8 @@ async def test_sse_replays_after_disconnect_and_pending_run_can_cancel():
                 if line.startswith("data: ")
             ]
             assert json.loads(data_lines[-1])["sequence"] == 3
+            invalid_cursor = await client.get(f"/api/runs/{run_id}/events?after=999")
+            assert invalid_cursor.status_code == 410
             await redis.delete(store.key(run_id), store.sequence_key(run_id))
             expired = await client.get(f"/api/runs/{run_id}/events?after=1")
             assert expired.status_code == 410
