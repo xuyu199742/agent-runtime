@@ -1,9 +1,9 @@
 import pytest
 from cryptography.fernet import Fernet
 
-from app.infrastructure.database import ModelConfig
+from app.domain.agent import ModelDefinition
 from app.infrastructure.model_secrets import decrypt_model_key, encrypt_model_key
-from app.runtime.factory import build_model
+from app.runtime.factory import build_model, resolve_model_config
 from app.transport.schemas import ModelIn, ModelOut
 
 
@@ -13,14 +13,7 @@ def test_model_key_is_encrypted_and_not_returned(monkeypatch):
     assert "private-key" not in token
     assert decrypt_model_key(token) == "private-key"
     model = build_model(
-        ModelConfig(
-            name="secured",
-            provider="openai",
-            model_name="gpt-test",
-            api_key_encrypted=token,
-            config={},
-            enabled=True,
-        )
+        resolve_model_config(ModelDefinition(provider="openai", model_name="gpt-test"), token)
     )
     assert model.openai_api_key.get_secret_value() == "private-key"
 
@@ -42,12 +35,5 @@ def test_missing_master_key_rejects_secret_write(monkeypatch):
 def test_openai_model_without_database_credential_is_rejected():
     with pytest.raises(ValueError, match="模型尚未配置凭证"):
         build_model(
-            ModelConfig(
-                name="missing",
-                provider="openai",
-                model_name="gpt-test",
-                api_key_encrypted=None,
-                config={},
-                enabled=True,
-            )
+            resolve_model_config(ModelDefinition(provider="openai", model_name="gpt-test"), None)
         )

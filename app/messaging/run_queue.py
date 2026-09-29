@@ -29,15 +29,19 @@ class RunQueue:
         )
         return bool(result)
 
-    async def read(self, consumer: str, block_ms: int = 5000) -> list[tuple[str, dict]]:
+    async def read(
+        self, consumer: str, block_ms: int = 5000, count: int = 10
+    ) -> list[tuple[str, dict]]:
         rows = await self.redis.xreadgroup(
-            self.group, consumer, {self.stream: ">"}, count=10, block=block_ms
+            self.group, consumer, {self.stream: ">"}, count=count, block=block_ms
         )
         return [(stream_id, fields) for _stream, entries in rows for stream_id, fields in entries]
 
-    async def claim_idle(self, consumer: str, min_idle_ms: int = 60000) -> list[tuple[str, dict]]:
+    async def claim_idle(
+        self, consumer: str, min_idle_ms: int = 60000, count: int = 10
+    ) -> list[tuple[str, dict]]:
         _cursor, entries, _deleted = await self.redis.xautoclaim(
-            self.stream, self.group, consumer, min_idle_ms, "0-0", count=10
+            self.stream, self.group, consumer, min_idle_ms, "0-0", count=count
         )
         return entries
 

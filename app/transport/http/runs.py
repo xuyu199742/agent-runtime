@@ -1,14 +1,11 @@
 import structlog
-from fastapi import APIRouter, HTTPException
-from redis.asyncio import Redis
+from fastapi import APIRouter, HTTPException, Request
 from redis.exceptions import RedisError
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.runs import cancel_pending
 from app.config import get_settings
-from app.infrastructure.database import Message, Run, Session
-from app.infrastructure.events import EventStore
-from app.transport.http.common import Db
+from app.messaging.client import close_if_owned, redis_for_request
+from app.messaging.events import EventStore
+from app.transport.http.common import Runs
 from app.transport.schemas import RunOut
 
 log = structlog.get_logger()
@@ -16,32 +13,20 @@ log = structlog.get_logger()
 router = APIRouter()
 
 
-async def visible_run(db: AsyncSession, run_id: str) -> Run:
-    run = await db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(404, detail="Run 不存在")
-    session = await db.get(Session, run.session_id)
-    if session.user_id != get_settings().dev_user_id:
-        raise HTTPException(404, detail="Run 不存在")
-    return run
-
-
 @router.get("/api/runs/{run_id}", response_model=RunOut)
-async def get_run(run_id: str, db: Db):
-    run = await visible_run(db, run_id)
+async def get_run(run_id: str, runs: Runs):
+    run, answer = await runs.detail(run_id, get_settings().dev_user_id)
     result = RunOut.model_validate(run)
-    if run.answer_message_id:
-        answer = await db.get(Message, run.answer_message_id)
-        result.answer = answer.content if answer else None
+    result.answer = answer
     return result
 
 
 @router.post("/api/runs/{run_id}/cancel", response_model=RunOut)
-async def cancel_run(run_id: str, db: Db):
-    run = await visible_run(db, run_id)
-    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+async def cancel_run(run_id: str, runs: Runs, request: Request):
+    run = await runs.visible(run_id, get_settings().dev_user_id)
+    redis, owned = redis_for_request(request)
     try:
-        if run.status == "PENDING" and await cancel_pending(db, run_id):
+        if run.status == "PENDING" and await runs.cancel_pending(run_id):
             try:
                 await EventStore(redis).publish(run_id, "run.cancelled", {})
             except RedisError:
@@ -52,6 +37,5 @@ async def cancel_run(run_id: str, db: Db):
             except RedisError:
                 raise HTTPException(503, detail="取消信号暂时无法送达，请重试") from None
     finally:
-        await redis.aclose()
-    await db.refresh(run)
-    return await get_run(run_id, db)
+        await close_if_owned(redis, owned)
+    return await get_run(run_id, runs)

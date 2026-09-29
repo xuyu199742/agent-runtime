@@ -7,7 +7,6 @@ class RunStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
-    INTERRUPTED = "INTERRUPTED"
 
 
 _ALLOWED = {
@@ -16,9 +15,7 @@ _ALLOWED = {
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
-        RunStatus.INTERRUPTED,
     },
-    RunStatus.INTERRUPTED: {RunStatus.RUNNING, RunStatus.CANCELLED},
 }
 
 

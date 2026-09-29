@@ -3,8 +3,8 @@ from uuid import uuid4
 
 from redis.asyncio import Redis
 
-from app.infrastructure.events import EventStore
-from app.infrastructure.redis_queue import RunQueue
+from app.messaging.events import EventStore
+from app.messaging.run_queue import RunQueue
 
 
 async def test_event_stream_replays_after_sequence():

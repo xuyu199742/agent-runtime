@@ -50,11 +50,16 @@ class ToolIn(BaseModel):
     description: str = ""
     type: Literal["NATIVE", "HTTP"]
     config: dict = Field(default_factory=dict)
+    policy: dict = Field(default_factory=dict)
     enabled: bool = True
 
     @model_validator(mode="after")
     def validate_tool_options(self):
-        if self.type == "NATIVE" and (self.name not in {"echo", "calculator"} or self.config):
+        if self.type == "NATIVE" and (
+            self.name not in {"echo", "calculator"}
+            or set(self.config) - {"timeout_seconds"}
+            or self.policy
+        ):
             raise ValueError("不支持的 Native Tool 配置")
         if self.type == "HTTP":
             if self.name != "http_request" or set(self.config) - {
@@ -62,13 +67,22 @@ class ToolIn(BaseModel):
                 "timeout_seconds",
             }:
                 raise ValueError("不支持的 HTTP Tool 配置")
-            hosts = self.config.get("allowed_hosts", [])
+            if set(self.policy) - {"allowed_hosts"}:
+                raise ValueError("HTTP Tool policy 包含不支持的配置")
+            hosts = self.policy.get("allowed_hosts", self.config.get("allowed_hosts", []))
             if (
                 not isinstance(hosts, list)
                 or not hosts
                 or not all(isinstance(host, str) and host for host in hosts)
             ):
                 raise ValueError("HTTP Tool 需要 allowed_hosts 域名列表")
+        timeout = self.config.get("timeout_seconds", 10)
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= 30
+        ):
+            raise ValueError("Tool timeout_seconds 必须在 0 到 30 秒之间")
         return self
 
 
@@ -81,7 +95,7 @@ class AgentIn(BaseModel):
     description: str = ""
     system_prompt: str = ""
     model_id: str
-    max_steps: int = Field(default=10, ge=1, le=100)
+    max_model_calls: int = Field(default=10, ge=1, le=100)
     enabled: bool = True
     tool_ids: list[str] = Field(default_factory=list)
 
@@ -92,7 +106,7 @@ class AgentOut(Out):
     description: str
     system_prompt: str
     model_id: str
-    max_steps: int
+    max_model_calls: int
     enabled: bool
     tool_ids: list[str]
     created_at: datetime

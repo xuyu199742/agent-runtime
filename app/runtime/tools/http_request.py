@@ -24,13 +24,14 @@ def http_tool(allowed_hosts: set[str], timeout_seconds: float = 10) -> BaseTool:
             or parsed.password
         ):
             raise ValueError("HTTP Tool 只允许白名单中的 HTTPS 地址")
-        await _check_public_host(host)
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=timeout_seconds, trust_env=False
-        ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.text[:20000]
+        async with asyncio.timeout(timeout_seconds):
+            await _check_public_host(host)
+            async with httpx.AsyncClient(
+                follow_redirects=False, timeout=timeout_seconds, trust_env=False
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.text[:20000]
 
     return StructuredTool.from_function(
         coroutine=http_request,
