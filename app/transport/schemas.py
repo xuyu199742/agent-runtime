@@ -9,11 +9,13 @@ class Out(BaseModel):
 
 
 class ModelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=100)
     provider: Literal["openai", "openai-compatible"]
     model_name: str = Field(min_length=1, max_length=120)
     base_url: str | None = None
-    api_key_env: str = "OPENAI_API_KEY"
+    api_key: str | None = Field(default=None, min_length=1, exclude=True, repr=False)
     config: dict = Field(default_factory=dict)
     enabled: bool = True
 
@@ -32,8 +34,15 @@ class ModelIn(BaseModel):
         return self
 
 
-class ModelOut(ModelIn, Out):
+class ModelOut(Out):
     id: str
+    name: str
+    provider: Literal["openai", "openai-compatible"]
+    model_name: str
+    base_url: str | None = None
+    config: dict = Field(default_factory=dict)
+    enabled: bool = True
+    has_api_key: bool
 
 
 class ToolIn(BaseModel):

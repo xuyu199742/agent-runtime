@@ -6,6 +6,8 @@
 
 业务 Run 和 LangGraph thread 是不同层次。一个 Run 使用同 ID 的 checkpoint thread；Session 历史存 PostgreSQL，Context Builder 选取最近消息作为模型输入。系统提示词由 Agent 配置传给 `create_agent`，本次 ToolMessage 留在 LangGraph 执行状态里。
 
+服务只配置一个 `DATABASE_URL`：SQLAlchemy 使用其 `asyncpg` 驱动；LangGraph checkpointer 从同一 URL 派生 `psycopg` 驱动 URL。二者连接同一 PostgreSQL 数据库。
+
 ## 消息和 Run
 
 提交消息时，数据库事务创建 user Message 与 PENDING Run。`UNIQUE(user_id, client_message_id)` 保证同一个客户端消息幂等；Session 行锁让不同消息不能同时创建两个活跃 Run。事务提交后 API 投递 Redis Stream `agent:runs` 并立即返回；投递失败时 Worker 定期扫描 PENDING Run 补投。
@@ -20,7 +22,7 @@ Worker 向逐 Run Redis Stream 发布 `run.started`、`model.started/delta/compl
 
 ## 错误与安全
 
-API 返回稳定的错误码（例如 `VALIDATION_ERROR`、`MODEL_ERROR`、`TIMEOUT`、`CANCELLED`、`PERMISSION_DENIED`、`INTERNAL_ERROR`），不返回数据库异常或 Python traceback。模型凭证从环境变量读取，不进入模型配置响应。HTTP Tool 只允许服务端和 Tool 双白名单交集内的 HTTPS GET，拒绝非公网解析地址且不跟随重定向；公网部署前仍需正式的出站网络限制。
+API 返回稳定的错误码（例如 `VALIDATION_ERROR`、`MODEL_ERROR`、`TIMEOUT`、`CANCELLED`、`PERMISSION_DENIED`、`INTERNAL_ERROR`），不返回数据库异常或 Python traceback。模型配置与加密后的 API Key 存 PostgreSQL；模型配置响应只显示是否已有密钥。`MODEL_SECRET_KEY` 仅作为服务主密钥，不存模型配置，API/Worker 必须使用同一个值。HTTP Tool 只允许服务端和 Tool 双白名单交集内的 HTTPS GET，拒绝非公网解析地址且不跟随重定向；公网部署前仍需正式的出站网络限制。
 
 本版只支持本地单用户开发。RAG、Memory、Skill、MCP、Workflow、可视化和 Go 网关均不在 V0.1 中。
 

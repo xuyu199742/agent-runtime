@@ -4,7 +4,7 @@ x-app-image: &app-image
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: agent
       POSTGRES_PASSWORD: agent
@@ -16,7 +16,7 @@ services:
       interval: 3s
       retries: 20
   redis:
-    image: redis:7
+    image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports: ["127.0.0.1:6380:6379"]
     volumes: ["redis_data:/data"]
@@ -38,7 +38,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
-      CHECKPOINT_DATABASE_URL: postgresql://agent:agent@postgres:5432/agent
       REDIS_URL: redis://redis:6379/0
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
@@ -53,7 +52,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
-      CHECKPOINT_DATABASE_URL: postgresql://agent:agent@postgres:5432/agent
       REDIS_URL: redis://redis:6379/0
     depends_on:
       migrate:

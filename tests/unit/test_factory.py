@@ -11,7 +11,7 @@ def test_openai_compatible_model_uses_configured_endpoint():
         provider="openai-compatible",
         model_name="qwen",
         base_url="http://localhost:8001/v1",
-        api_key_env="UNSET_TEST_MODEL_KEY",
+        api_key_encrypted=None,
         config={},
         enabled=True,
     )

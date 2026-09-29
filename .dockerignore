@@ -1,5 +1,7 @@
 .venv
 .git
+.idea
+.DS_Store
 .env
 .pytest_cache
 .ruff_cache
@@ -7,3 +9,4 @@ __pycache__
 *.pyc
 tests
 docs
+examples

@@ -4,14 +4,17 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.infrastructure.database import get_db
+from app.infrastructure.database import ModelConfig, get_db
+from app.infrastructure.model_secrets import decrypt_model_key
 from app.main import app
 
 
 @pytest.mark.asyncio
-async def test_catalog_session_and_message_idempotence():
+async def test_catalog_session_and_message_idempotence(monkeypatch):
+    monkeypatch.setenv("MODEL_SECRET_KEY", Fernet.generate_key().decode())
     url = os.environ["TEST_DATABASE_URL"]
     engine = create_async_engine(url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -31,6 +34,56 @@ async def test_catalog_session_and_message_idempotence():
                 json={"name": f"model-{suffix}", "provider": "openai", "model_name": "test-model"},
             )
             assert model.status_code == 201, model.text
+            secured = await client.post(
+                "/api/models",
+                json={
+                    "name": f"secured-{suffix}",
+                    "provider": "openai",
+                    "model_name": "secure-model",
+                    "api_key": "private-model-key",
+                },
+            )
+            assert secured.status_code == 201, secured.text
+            assert secured.json()["has_api_key"] is True
+            assert "private-model-key" not in secured.text
+            assert "api_key" not in secured.json()
+            async with factory() as db:
+                stored = await db.get(ModelConfig, secured.json()["id"])
+                assert "private-model-key" not in stored.api_key_encrypted
+                assert decrypt_model_key(stored.api_key_encrypted) == "private-model-key"
+            refreshed = await client.put(
+                f"/api/models/{secured.json()['id']}",
+                json={"name": f"secured-{suffix}", "provider": "openai", "model_name": "updated"},
+            )
+            assert refreshed.json()["has_api_key"] is True
+            assert "api_key" not in (await client.get(f"/api/models/{secured.json()['id']}")).json()
+            assert all("api_key" not in item for item in (await client.get("/api/models")).json())
+            rotated = await client.put(
+                f"/api/models/{secured.json()['id']}",
+                json={
+                    "name": f"secured-{suffix}",
+                    "provider": "openai",
+                    "model_name": "updated",
+                    "api_key": "rotated-key",
+                },
+            )
+            assert rotated.status_code == 200
+            async with factory() as db:
+                stored = await db.get(ModelConfig, secured.json()["id"])
+                assert decrypt_model_key(stored.api_key_encrypted) == "rotated-key"
+            with monkeypatch.context() as missing_key:
+                missing_key.setenv("MODEL_SECRET_KEY", "")
+                unavailable = await client.post(
+                    "/api/models",
+                    json={
+                        "name": f"unavailable-{suffix}",
+                        "provider": "openai",
+                        "model_name": "test",
+                        "api_key": "must-not-store",
+                    },
+                )
+                assert unavailable.status_code == 503
+                assert "must-not-store" not in unavailable.text
             secret = await client.post(
                 "/api/models",
                 json={

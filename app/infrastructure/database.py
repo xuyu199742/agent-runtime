@@ -37,7 +37,7 @@ class ModelConfig(Base):
     provider: Mapped[str] = mapped_column(String(40))
     model_name: Mapped[str] = mapped_column(String(120))
     base_url: Mapped[str | None] = mapped_column(String(500))
-    api_key_env: Mapped[str] = mapped_column(String(100), default="OPENAI_API_KEY")
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 

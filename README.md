@@ -6,13 +6,15 @@
 
 ```bash
 cp .env.example .env
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# 把上一步的输出填入 .env 的 MODEL_SECRET_KEY
 docker compose up -d --build
 curl http://localhost:8000/ready
 ```
 
 接口文档：`http://localhost:8000/docs`。`/health` 只检查 API 进程；`/ready` 检查 PostgreSQL 与 Redis。API 与 Worker 共用一个 Dockerfile，使用不同启动命令。PostgreSQL 和 Redis 数据分别保存在 Docker volume 中。
 
-模型密钥只放在 API/Worker 环境变量中，例如 `OPENAI_API_KEY`；数据库的 `api_key_env` 只保存变量名。使用 OpenAI-compatible 本地服务时，可通过 `base_url` 指向兼容接口，未设置密钥时使用占位值。HTTP Tool 默认关闭，只有服务端 `HTTP_TOOL_ALLOWED_HOSTS` 与 Tool 配置中的 `allowed_hosts` 同时包含目标域名时才启用，并只执行 HTTPS GET。
+模型名称、端点和模型 API Key 均通过 `/api/models` 写入 PostgreSQL。API Key 在数据库中加密存储，读取接口只返回 `has_api_key`，更新时省略 `api_key` 会保留原值。`MODEL_SECRET_KEY` 是服务加解密主密钥，必须由 API 和 Worker 共用并妥善备份；丢失后已有模型 API Key 无法解密。已有 V0.1 数据库升级后，原来引用环境变量的模型需要通过模型更新接口重新写入 API Key；旧请求字段 `api_key_env` 已移除。使用 OpenAI-compatible 本地服务时，可通过 `base_url` 指向兼容接口，未设置密钥时使用占位值。HTTP Tool 默认关闭，只有服务端 `HTTP_TOOL_ALLOWED_HOSTS` 与 Tool 配置中的 `allowed_hosts` 同时包含目标域名时才启用，并只执行 HTTPS GET。
 模型上下文默认取最近 30 条 Session 消息，可通过 `CONTEXT_MAX_MESSAGES` 调整；完整历史仍保留在 PostgreSQL。
 
 ## 发起一次对话
@@ -25,7 +27,7 @@ curl http://localhost:8000/ready
 6. `GET /api/runs/{id}/events` 订阅 SSE；断线后以 `?after=最后收到的序号` 或 `Last-Event-ID` 继续。
 7. `GET /api/runs/{id}` 查询持久状态与最终 `answer`；`POST /api/runs/{id}/cancel` 主动取消。
 
-示例创建脚本见 [examples/bootstrap_demo.py](examples/bootstrap_demo.py)。完整 API、执行流程和错误语义见 [docs/architecture.md](docs/architecture.md)。
+创建模型时在 JSON 中传入 `api_key`；本地无密钥的兼容服务可省略。示例创建脚本见 [examples/bootstrap_demo.py](examples/bootstrap_demo.py)。完整 API、执行流程和错误语义见 [docs/architecture.md](docs/architecture.md)，队列语义见 [docs/mq-design.md](docs/mq-design.md)。
 V0.1 的测试命令与端到端结果见 [docs/verification.md](docs/verification.md)。
 
 ## 开发和测试

@@ -1,8 +1,7 @@
-import os
-
 from langchain_openai import ChatOpenAI
 
 from app.infrastructure.database import ModelConfig
+from app.infrastructure.model_secrets import decrypt_model_key
 
 
 def build_model(config: ModelConfig) -> ChatOpenAI:
@@ -10,9 +9,9 @@ def build_model(config: ModelConfig) -> ChatOpenAI:
         raise ValueError("模型配置不可用")
     if config.provider == "openai-compatible" and not config.base_url:
         raise ValueError("OpenAI-compatible 模型必须配置 base_url")
-    api_key = os.getenv(config.api_key_env)
+    api_key = decrypt_model_key(config.api_key_encrypted) if config.api_key_encrypted else None
     if not api_key and config.provider == "openai":
-        raise ValueError(f"缺少模型凭证环境变量: {config.api_key_env}")
+        raise ValueError("模型尚未配置凭证")
     options = config.config or {}
     return ChatOpenAI(
         model=config.model_name,

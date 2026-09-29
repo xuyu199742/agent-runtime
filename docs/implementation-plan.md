@@ -17,11 +17,12 @@
 | 路径 | 职责 |
 | --- | --- |
 | `app/domain/entities.py`, `app/domain/errors.py` | 业务概念、Run 状态与错误码；不依赖框架 |
-| `app/infrastructure/database/models.py`, `session.py` | ORM 映射和异步连接 |
+| `app/infrastructure/database.py` | ORM 映射和异步连接 |
 | `app/application/catalog.py`, `chat.py`, `runs.py` | 配置管理、消息提交、Run 查询与取消 |
-| `app/transport/http.py`, `sse.py`, `schemas.py` | API、输入输出校验、SSE 协议 |
+| `app/transport/http/`, `schemas.py` | 按资源拆分 API 路由、输入输出校验、SSE 协议 |
 | `app/runtime/factory.py`, `context.py`, `agent.py` | 模型和 Tool 组装、历史上下文、LangChain Agent 执行 |
 | `app/runtime/middleware.py` | Tracing、Tool Error、Run Context 中间件 |
+| `app/runtime/tools/` | 每个 Tool 独立模块与 Registry |
 | `app/infrastructure/redis_queue.py`, `events.py` | 消费组、事件流、取消信号 |
 | `app/worker.py` | Run 抢占、执行、恢复与 ACK |
 | `migrations/versions/*.py` | 显式迁移，禁止运行时自动建表 |
@@ -36,7 +37,7 @@
 
 1. 建立 `pyproject.toml`、uv lock、格式与测试配置、Docker Compose（API、Worker、PostgreSQL、Redis）、环境变量示例、健康检查和结构化日志。
 2. 建 Alembic 首次迁移：`model_configs`、`tools`、`agents`、`agent_tools`、`sessions`、`messages`、`runs`。配置表设外键/索引；Message 增加 `UNIQUE(user_id, client_message_id)`；Run 关联触发消息并记录状态、时间、错误与最终回答关联。
-3. 实现配置 CRUD、Session 创建和查询、Message/Run 创建与查询。请求校验拒绝禁用的 Agent/Model/Tool 和无效关联。敏感模型凭证仅存环境变量或密钥引用，API 不回显。
+3. 实现配置 CRUD、Session 创建和查询、Message/Run 创建与查询。请求校验拒绝禁用的 Agent/Model/Tool 和无效关联。模型凭证加密后存 PostgreSQL；服务主密钥由环境提供，API 不回显凭证。
 4. 消息提交在单个 DB 事务内同时创建 Message 与 PENDING Run。此阶段不执行 Agent；Redis 连通性可检查，但入队放到 Phase 3。
 
 ### 阶段测试与通过条件

@@ -23,7 +23,7 @@ def main() -> None:
                 "provider": provider,
                 "model_name": model_name,
                 "base_url": base_url,
-                "api_key_env": os.getenv("AGENT_API_KEY_ENV", "OPENAI_API_KEY"),
+                "api_key": os.getenv("AGENT_MODEL_API_KEY"),
             },
         )
         model_response.raise_for_status()
