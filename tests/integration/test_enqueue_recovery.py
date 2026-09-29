@@ -6,11 +6,11 @@ from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.application.runs import pending_run_ids
 from app.config import get_settings
-from app.infrastructure.database import get_db
-from app.infrastructure.redis_queue import RunQueue
 from app.main import app
+from app.messaging.run_queue import RunQueue
+from app.persistence.database import get_db
+from app.persistence.repositories.runs import pending_run_ids
 
 
 async def test_redis_enqueue_failure_keeps_pending_run_for_recovery(monkeypatch):
@@ -56,7 +56,12 @@ async def test_redis_enqueue_failure_keeps_pending_run_for_recovery(monkeypatch)
             assert response.status_code == 202
             run_id = response.json()["run_id"]
             async with factory() as db:
-                assert run_id in await pending_run_ids(db)
+                seen = []
+                cursor = None
+                while page := await pending_run_ids(db, limit=17, after=cursor):
+                    seen.extend(page)
+                    cursor = page[-1]
+                assert run_id in seen
             monkeypatch.setattr(RunQueue, "enqueue", original_enqueue)
             redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
             try:

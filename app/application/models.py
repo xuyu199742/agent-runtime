@@ -1,19 +1,7 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.infrastructure.database import ModelConfig
 from app.infrastructure.model_secrets import encrypt_model_key
+from app.persistence.repositories.catalog import CatalogRepository
 
 
-async def save_model(
-    db: AsyncSession, values: dict, api_key: str | None, model: ModelConfig | None = None
-) -> ModelConfig:
-    if model is None:
-        model = ModelConfig()
-        db.add(model)
-    for key, value in values.items():
-        setattr(model, key, value)
-    if api_key is not None:
-        model.api_key_encrypted = encrypt_model_key(api_key)
-    await db.commit()
-    await db.refresh(model)
-    return model
+async def save_model(db, values: dict, api_key: str | None, model=None):
+    encrypted_key = encrypt_model_key(api_key) if api_key is not None else None
+    return await CatalogRepository(db).save_model(values, encrypted_key, model)

@@ -1,11 +1,10 @@
 import json
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from redis.asyncio import Redis
 
-from app.config import get_settings
-from app.infrastructure.events import EventStore
+from app.messaging.client import close_if_owned, redis_for_request
+from app.messaging.events import EventStore
 from app.transport.http.common import Db
 from app.transport.http.runs import visible_run
 
@@ -15,6 +14,7 @@ router = APIRouter()
 @router.get("/api/runs/{run_id}/events")
 async def stream_events(
     run_id: str,
+    request: Request,
     db: Db,
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
@@ -25,12 +25,12 @@ async def stream_events(
             after = max(0, int(last_event_id))
         except ValueError:
             raise HTTPException(422, detail="Last-Event-ID 无效") from None
-    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    redis, owned = redis_for_request(request)
     events = EventStore(redis)
     first = await events.first_sequence(run_id)
     last = await events.last_sequence(run_id)
     if after > 0 and (first is None or after < first - 1 or after > last):
-        await redis.aclose()
+        await close_if_owned(redis, owned)
         raise HTTPException(410, detail="事件已过期，请读取 Run 最终状态")
     await db.commit()
 
@@ -61,7 +61,7 @@ async def stream_events(
                         yield f"event: run.snapshot\ndata: {payload}\n\n"
                         return
         finally:
-            await redis.aclose()
+            await close_if_owned(redis, owned)
 
     return StreamingResponse(
         generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}

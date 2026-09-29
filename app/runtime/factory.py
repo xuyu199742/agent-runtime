@@ -1,10 +1,10 @@
 from langchain_openai import ChatOpenAI
 
-from app.infrastructure.database import ModelConfig
+from app.domain.agent import ModelDefinition
 from app.infrastructure.model_secrets import decrypt_model_key
 
 
-def build_model(config: ModelConfig) -> ChatOpenAI:
+def build_model(config: ModelDefinition) -> ChatOpenAI:
     if not config.enabled or config.provider not in {"openai", "openai-compatible"}:
         raise ValueError("模型配置不可用")
     if config.provider == "openai-compatible" and not config.base_url:

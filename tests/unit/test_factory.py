@@ -1,6 +1,6 @@
 import pytest
 
-from app.infrastructure.database import ModelConfig
+from app.persistence.database import ModelConfig
 from app.runtime.factory import build_model
 from app.runtime.tools import calculate
 

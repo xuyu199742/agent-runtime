@@ -7,9 +7,9 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
-from app.infrastructure.database import get_db
-from app.infrastructure.events import EventStore
 from app.main import app
+from app.messaging.events import EventStore
+from app.persistence.database import get_db
 
 
 async def test_sse_replays_after_disconnect_and_pending_run_can_cancel():

@@ -1,13 +1,13 @@
 import structlog
-from fastapi import APIRouter, HTTPException
-from redis.asyncio import Redis
+from fastapi import APIRouter, HTTPException, Request
 from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.runs import cancel_pending
 from app.config import get_settings
-from app.infrastructure.database import Message, Run, Session
-from app.infrastructure.events import EventStore
+from app.messaging.client import close_if_owned, redis_for_request
+from app.messaging.events import EventStore
+from app.persistence.database import Message, Run, Session
+from app.persistence.repositories.runs import cancel_pending
 from app.transport.http.common import Db
 from app.transport.schemas import RunOut
 
@@ -37,9 +37,9 @@ async def get_run(run_id: str, db: Db):
 
 
 @router.post("/api/runs/{run_id}/cancel", response_model=RunOut)
-async def cancel_run(run_id: str, db: Db):
+async def cancel_run(run_id: str, db: Db, request: Request):
     run = await visible_run(db, run_id)
-    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    redis, owned = redis_for_request(request)
     try:
         if run.status == "PENDING" and await cancel_pending(db, run_id):
             try:
@@ -52,6 +52,6 @@ async def cancel_run(run_id: str, db: Db):
             except RedisError:
                 raise HTTPException(503, detail="取消信号暂时无法送达，请重试") from None
     finally:
-        await redis.aclose()
+        await close_if_owned(redis, owned)
     await db.refresh(run)
     return await get_run(run_id, db)

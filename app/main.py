@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import structlog
@@ -12,12 +13,28 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.config import get_settings
 from app.domain.errors import AppError, Conflict, NotFound
 from app.infrastructure.logging import configure_logging
+from app.messaging.client import close_if_owned, redis_for_request
+from app.persistence.database import engine
 from app.transport.http import agents, models, runs, sessions, sse, tools
 from app.transport.http.common import Db
 
 configure_logging()
 log = structlog.get_logger()
-app = FastAPI(title="Agent Server", version="0.1.0")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    app.state.redis = redis
+    try:
+        yield
+    finally:
+        await redis.aclose()
+        await engine.dispose()
+        del app.state.redis
+
+
+app = FastAPI(title="Agent Server", version="0.1.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -85,14 +102,14 @@ async def health():
 
 
 @app.get("/ready")
-async def ready(db: Db):
+async def ready(request: Request, db: Db):
     try:
         await db.execute(text("SELECT 1"))
-        redis = Redis.from_url(get_settings().redis_url)
+        redis, owned = redis_for_request(request)
         try:
             await redis.ping()
         finally:
-            await redis.aclose()
+            await close_if_owned(redis, owned)
     except (SQLAlchemyError, RedisError, OSError):
         raise HTTPException(503, detail="依赖暂不可用") from None
     return {"status": "ready"}

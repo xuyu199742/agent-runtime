@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from app.application.catalog import AgentInput, agent_out, save_agent
-from app.infrastructure.database import AgentDefinition
+from app.persistence.database import AgentDefinition
 from app.transport.http.common import Db
 from app.transport.schemas import AgentIn, AgentOut
 

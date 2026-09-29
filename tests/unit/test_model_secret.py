@@ -1,8 +1,8 @@
 import pytest
 from cryptography.fernet import Fernet
 
-from app.infrastructure.database import ModelConfig
 from app.infrastructure.model_secrets import decrypt_model_key, encrypt_model_key
+from app.persistence.database import ModelConfig
 from app.runtime.factory import build_model
 from app.transport.schemas import ModelIn, ModelOut
 

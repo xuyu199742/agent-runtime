@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from app.infrastructure.database import ToolDefinition
+from app.persistence.database import ToolDefinition
 from app.transport.http.common import Db
 from app.transport.schemas import ToolIn, ToolOut
 

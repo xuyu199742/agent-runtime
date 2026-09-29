@@ -7,9 +7,9 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.infrastructure.database import ModelConfig, get_db
 from app.infrastructure.model_secrets import decrypt_model_key
 from app.main import app
+from app.persistence.database import ModelConfig, get_db
 
 
 @pytest.mark.asyncio

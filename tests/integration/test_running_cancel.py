@@ -9,12 +9,12 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import worker
 from app.config import get_settings
-from app.infrastructure.database import get_db
-from app.infrastructure.events import EventStore
-from app.infrastructure.redis_queue import RunQueue
 from app.main import app
+from app.messaging.events import EventStore
+from app.messaging.run_queue import RunQueue
+from app.persistence.database import get_db
+from app.worker import runner as worker
 
 
 class SlowModel(FakeMessagesListChatModel):

@@ -1,11 +1,7 @@
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.domain.errors import Conflict, InvalidConfiguration, NotFound
-from app.infrastructure.database import AgentDefinition, Message, ModelConfig, Run, Session, new_id
+from app.persistence.repositories.conversations import ConversationRepository
 
 
 @dataclass(frozen=True)
@@ -14,35 +10,27 @@ class AcceptedMessage:
     run_id: str
 
 
-async def create_session(db: AsyncSession, agent_id: str, user_id: str) -> Session:
-    agent = await db.get(AgentDefinition, agent_id)
+async def create_session(db, agent_id: str, user_id: str):
+    conversations = ConversationRepository(db)
+    agent = await conversations.agent(agent_id)
     if agent is None or not agent.enabled:
         raise InvalidConfiguration("Agent 不存在或未启用")
-    model = await db.get(ModelConfig, agent.model_id)
+    model = await conversations.model(agent.model_id)
     if model is None or not model.enabled:
         raise InvalidConfiguration("模型不存在或未启用")
-    session = Session(agent_id=agent_id, user_id=user_id)
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
-    return session
+    return await conversations.create_session(agent_id, user_id)
 
 
 async def submit_message(
-    db: AsyncSession, session_id: str, user_id: str, client_message_id: str, content: str
+    db, session_id: str, user_id: str, client_message_id: str, content: str
 ) -> AcceptedMessage:
-    session = await db.get(Session, session_id)
+    conversations = ConversationRepository(db)
+    session = await conversations.session(session_id)
     if session is None or session.user_id != user_id:
         raise NotFound("Session 不存在")
 
-    async def existing() -> AcceptedMessage | None:
-        row = (
-            await db.execute(
-                select(Message, Run)
-                .join(Run, Run.message_id == Message.id)
-                .where(Message.user_id == user_id, Message.client_message_id == client_message_id)
-            )
-        ).first()
+    async def previous() -> AcceptedMessage | None:
+        row = await conversations.existing_submission(user_id, client_message_id)
         if row is None:
             return None
         message, run = row
@@ -50,41 +38,22 @@ async def submit_message(
             raise Conflict("client_message_id 已用于其他消息")
         return AcceptedMessage(message_id=message.id, run_id=run.id)
 
-    previous = await existing()
-    if previous is not None:
-        return previous
+    existing = await previous()
+    if existing is not None:
+        return existing
 
-    # 同一 Session 的不同请求串行创建 Run；拿锁后再次检查幂等键。
-    await db.execute(select(Session.id).where(Session.id == session_id).with_for_update())
-    previous = await existing()
-    if previous is not None:
-        return previous
-
-    active = await db.scalar(
-        select(Run.id).where(
-            Run.session_id == session_id,
-            Run.status.in_(["PENDING", "RUNNING", "INTERRUPTED"]),
-        )
-    )
-    if active is not None:
+    # 同一 Session 的新请求串行创建 Run；拿锁后再次检查幂等键。
+    await conversations.lock_session(session_id)
+    existing = await previous()
+    if existing is not None:
+        return existing
+    if await conversations.has_active_run(session_id):
         raise Conflict("Session 中已有执行中的 Run")
 
-    message = Message(
-        id=new_id(),
-        session_id=session_id,
-        user_id=user_id,
-        role="user",
-        content=content,
-        client_message_id=client_message_id,
-    )
-    run = Run(id=new_id(), session_id=session_id, message_id=message.id, status="PENDING")
-    db.add_all([message, run])
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        previous = await existing()
-        if previous is not None:
-            return previous
-        raise
-    return AcceptedMessage(message_id=message.id, run_id=run.id)
+    created = await conversations.create_submission(session_id, user_id, client_message_id, content)
+    if created is None:
+        existing = await previous()
+        if existing is not None:
+            return existing
+        raise Conflict("消息提交冲突")
+    return AcceptedMessage(message_id=created[0], run_id=created[1])

@@ -2,6 +2,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TypedDict
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -29,18 +30,22 @@ class LangChainAgentRuntime:
         model: BaseChatModel,
         tools: Sequence[BaseTool],
         system_prompt: str,
-        max_steps: int,
+        max_model_calls: int,
         checkpointer=None,
     ) -> None:
         self.graph = create_agent(
             model=model,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[RunContextMiddleware(), TracingMiddleware(), ToolErrorMiddleware()],
+            middleware=[
+                RunContextMiddleware(),
+                TracingMiddleware(),
+                ToolErrorMiddleware(),
+                ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
+            ],
             context_schema=RunContext,
             checkpointer=checkpointer,
         )
-        self.max_steps = max_steps
         self.has_checkpointer = checkpointer is not None
 
     async def run(
@@ -53,7 +58,7 @@ class LangChainAgentRuntime:
         user_id: str | None = None,
         resume: bool = False,
     ) -> str:
-        config = {"configurable": {"thread_id": run_id}, "recursion_limit": self.max_steps * 2 + 2}
+        config = {"configurable": {"thread_id": run_id}, "recursion_limit": 1000}
         input_state = {"messages": list(messages)}
         if resume and self.has_checkpointer:
             state = await self.graph.aget_state(config)

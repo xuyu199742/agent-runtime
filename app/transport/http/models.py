@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from app.application.models import save_model
-from app.infrastructure.database import ModelConfig
 from app.infrastructure.model_secrets import ModelSecretConfigurationError
+from app.persistence.database import ModelConfig
 from app.transport.http.common import Db
 from app.transport.schemas import ModelIn, ModelOut
 

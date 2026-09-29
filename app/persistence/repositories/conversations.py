@@ -1,0 +1,68 @@
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.persistence.database import AgentDefinition, Message, ModelConfig, Run, Session, new_id
+
+
+class ConversationRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def agent(self, agent_id: str):
+        return await self.db.get(AgentDefinition, agent_id)
+
+    async def model(self, model_id: str):
+        return await self.db.get(ModelConfig, model_id)
+
+    async def session(self, session_id: str):
+        return await self.db.get(Session, session_id)
+
+    async def create_session(self, agent_id: str, user_id: str):
+        session = Session(agent_id=agent_id, user_id=user_id)
+        self.db.add(session)
+        await self.db.commit()
+        await self.db.refresh(session)
+        return session
+
+    async def existing_submission(self, user_id: str, client_message_id: str):
+        return (
+            await self.db.execute(
+                select(Message, Run)
+                .join(Run, Run.message_id == Message.id)
+                .where(Message.user_id == user_id, Message.client_message_id == client_message_id)
+            )
+        ).first()
+
+    async def lock_session(self, session_id: str) -> None:
+        await self.db.execute(select(Session.id).where(Session.id == session_id).with_for_update())
+
+    async def has_active_run(self, session_id: str) -> bool:
+        return (
+            await self.db.scalar(
+                select(Run.id).where(
+                    Run.session_id == session_id, Run.status.in_(["PENDING", "RUNNING"])
+                )
+            )
+            is not None
+        )
+
+    async def create_submission(
+        self, session_id: str, user_id: str, client_message_id: str, content: str
+    ) -> tuple[str, str] | None:
+        message = Message(
+            id=new_id(),
+            session_id=session_id,
+            user_id=user_id,
+            role="user",
+            content=content,
+            client_message_id=client_message_id,
+        )
+        run = Run(id=new_id(), session_id=session_id, message_id=message.id, status="PENDING")
+        self.db.add_all([message, run])
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            return None
+        return message.id, run.id
