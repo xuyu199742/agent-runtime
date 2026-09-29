@@ -37,6 +37,7 @@ uv run alembic check                        No new upgrade operations detected.
 - 以当前源码直接启动 API、Worker、OpenAI-compatible 测试桩，连接 Docker 中的 PostgreSQL/Redis：Run `e834a88c-4014-432a-bd5e-c049eebeb12c` 经过 calculator 并返回 `答案是 4`；数据库中的模型密钥为密文。Run `7f5ac94e-756d-4b71-b013-4183b52c4aba` 在 SSE 断开时仍为 RUNNING，重连回放至 `run.completed`，最终返回 `答案是 4`。
 - 同时启动两个本地 API 实例和两个 Worker；两个 API 的 `/ready` 均返回 200。通过一个 API 提交 Run `5ebf02cf-1ff6-4b2b-ba43-b99a1c2c4128`，从另一个 API 查询得到 `COMPLETED` 与 `答案是 4`；该 Session 只有一条 assistant Message。
 - 新的多阶段应用镜像构建成功，镜像大小约 290 MB，原应用镜像约 347 MB。使用该镜像分别启动 API 和 Worker 容器，连接现有 PostgreSQL/Redis 容器；API `/ready` 返回 200，Run `942503d6-3c00-4b60-834d-c78e42f272dc` 实际经过容器 API → Redis Queue → 容器 Worker → 模型测试桩 → calculator → SSE，最终为 `COMPLETED`，回答 `答案是 4`。
+- 同一容器镜像下，Run `fde2afdf-b722-4801-815a-2c5902bb5748` 在首个 SSE 事件后断线时仍为 `RUNNING`；以 `after=1` 重连收到后续 Tool 和模型事件，最终为 `COMPLETED`，回答 `答案是 4`。
 - Redis Alpine 镜像已拉取并成功执行 `redis-server --version`，本地镜像大小约 39 MB，原 `redis:7` 约 136 MB。PostgreSQL Alpine 镜像尚未完成拉取与现有数据卷兼容性检查；当前容器端到端复验仍使用原 `postgres:16` 和 `redis:7`。
 
 ### 原需求第 38 节架构验收复核
