@@ -18,6 +18,17 @@ class ConversationRepository:
     async def session(self, session_id: str):
         return await self.db.get(Session, session_id)
 
+    async def recent_messages(self, session_id: str, before, limit: int):
+        rows = (
+            await self.db.scalars(
+                select(Message)
+                .where(Message.session_id == session_id, Message.created_at <= before)
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return list(reversed(rows))
+
     async def create_session(self, agent_id: str, user_id: str):
         session = Session(agent_id=agent_id, user_id=user_id)
         self.db.add(session)

@@ -7,7 +7,6 @@ from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededE
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
@@ -17,16 +16,16 @@ from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
     AgentDefinition,
-    Message,
     ModelConfig,
     Run,
     Session,
     session_factory,
 )
+from app.persistence.repositories.conversations import ConversationRepository
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled
 from app.runtime.context import build_context
-from app.runtime.factory import build_model
+from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
 
 log = structlog.get_logger()
@@ -92,14 +91,8 @@ async def run_agent(
         session = await db.get(Session, run.session_id)
         agent = await db.get(AgentDefinition, session.agent_id)
         model_config = await db.get(ModelConfig, agent.model_id)
-        history = list(
-            (
-                await db.scalars(
-                    select(Message)
-                    .where(Message.session_id == session.id, Message.created_at <= run.created_at)
-                    .order_by(Message.created_at, Message.id)
-                )
-            ).all()
+        history = await ConversationRepository(db).recent_messages(
+            session.id, run.created_at, get_settings().context_max_messages
         )
 
     structlog.contextvars.clear_contextvars()
@@ -117,13 +110,15 @@ async def run_agent(
         await safe_publish(events, run_id, "run.started", {})
     runtime = LangChainAgentRuntime(
         model=build_model(
-            ModelDefinition(
-                provider=model_config.provider,
-                model_name=model_config.model_name,
-                base_url=model_config.base_url,
-                api_key_encrypted=model_config.api_key_encrypted,
-                config=model_config.config,
-                enabled=model_config.enabled,
+            resolve_model_config(
+                ModelDefinition(
+                    provider=model_config.provider,
+                    model_name=model_config.model_name,
+                    base_url=model_config.base_url,
+                    config=model_config.config,
+                    enabled=model_config.enabled,
+                ),
+                model_config.api_key_encrypted,
             )
         ),
         tools=build_tools(

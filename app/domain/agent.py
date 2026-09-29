@@ -6,7 +6,6 @@ class ModelDefinition:
     provider: str
     model_name: str
     base_url: str | None = None
-    api_key_encrypted: str | None = None
     config: dict = field(default_factory=dict)
     enabled: bool = True
 

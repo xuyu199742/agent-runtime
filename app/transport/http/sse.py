@@ -3,10 +3,10 @@ import json
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.config import get_settings
 from app.messaging.client import close_if_owned, redis_for_request
 from app.messaging.events import EventStore
-from app.transport.http.common import Db
-from app.transport.http.runs import visible_run
+from app.transport.http.common import Runs
 
 router = APIRouter()
 
@@ -15,11 +15,12 @@ router = APIRouter()
 async def stream_events(
     run_id: str,
     request: Request,
-    db: Db,
+    runs: Runs,
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
-    run = await visible_run(db, run_id)
+    await runs.visible(run_id, get_settings().dev_user_id)
+    await runs.release_read()
     if after == 0 and last_event_id:
         try:
             after = max(0, int(last_event_id))
@@ -32,7 +33,6 @@ async def stream_events(
     if after > 0 and (first is None or after < first - 1 or after > last):
         await close_if_owned(redis, owned)
         raise HTTPException(410, detail="事件已过期，请读取 Run 最终状态")
-    await db.commit()
 
     async def generate():
         cursor = after
@@ -46,9 +46,7 @@ async def stream_events(
                     if event.type in {"run.completed", "run.failed", "run.cancelled"}:
                         return
                 if not batch:
-                    await db.refresh(run)
-                    status = run.status
-                    await db.commit()
+                    status = await runs.status(run_id)
                     if status in {"COMPLETED", "FAILED", "CANCELLED"}:
                         payload = json.dumps(
                             {

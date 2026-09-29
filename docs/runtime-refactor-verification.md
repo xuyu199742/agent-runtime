@@ -26,6 +26,20 @@ Domain 不依赖框架；Application 不导入 SQLAlchemy、Redis、LangChain/La
 - `max_model_calls` 使用 LangChain `ModelCallLimitMiddleware`；图 `recursion_limit` 仅为安全上限。Context 同时受消息数和近似 token 预算限制；Tool 的 DB 描述、超时和 HTTP policy 实际参与 LangChain Tool 构造。
 - Redis 事件流负责 SSE 实时输出与序号回放，LangGraph checkpoint 负责执行恢复。二者职责独立；PostgreSQL 保存最终 Run 与回答。API 的 Redis 客户端由 FastAPI lifespan 管理。
 
+## 合并前边界收尾
+
+- HTTP Route 只调用 `CatalogService`、`ConversationService`、`RunService`。`transport/http/common.py` 是装配入口，构造 `AsyncSession → Repository → Service`；SQLAlchemy CRUD 留在三组粗粒度 Repository。
+- Domain 的 `ModelDefinition` 只描述模型业务配置。密文保存在 ORM，Repository 写入时加密；Runtime Factory 通过 `ModelRuntimeConfig` 和 Secret Resolver 得到运行时 credential。
+- Worker 从数据库倒序读取最近 `context_max_messages` 条消息，再交给 Context Builder 做 token 预算保护，避免长 Session 全量加载。
+- `model.started`、`model.delta`、`model.completed` 均带稳定 `step_id = run_id:model:langgraph_step`。同一个 step 重新出现 `model.started` 表示重试，客户端应清空该 step 旧的 partial，再追加新 delta。SSE 的递增 event ID 仍用于断线回放；`run.completed` 的 PostgreSQL 回答是终态权威结果。
+- GitHub Actions CI 使用 PostgreSQL/Redis service container，依次执行迁移、`ruff check`、`ruff format --check`、`pytest`。
+
+### 本轮实测（2026-09-29）
+
+- `uv run ruff check .`：通过；`uv run ruff format --check .`：95 个文件格式通过。
+- 使用本地 PostgreSQL/Redis 容器运行 `uv run pytest -q`：51 passed。新增测试覆盖 mid-model-stream 中断后的 checkpoint resume、相同 logical step 的事件重建、长 Session 最近消息查询、HTTP Route 边界与 Domain Secret 边界。
+- `docker compose up -d --build --scale worker=2`：成功；`GET /ready`：200。真实 API → Redis Queue → Worker → OpenAI-compatible 流式桩 → calculator → PostgreSQL 回答链路：Run `COMPLETED`，回答“答案是 4”；SSE 收到 `model.started/delta/completed` 的 `step_id` 并可按 `after` 回放。测试桩已关闭。
+
 ## 自动化与迁移
 
 ```text

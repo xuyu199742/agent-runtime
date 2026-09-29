@@ -70,6 +70,7 @@ class LangChainAgentRuntime:
                 input_state = None
         answer = ""
         model_step = None
+        step_id = None
         async for mode, chunk in self.graph.astream(
             input_state,
             config=config,
@@ -81,18 +82,31 @@ class LangChainAgentRuntime:
             if mode == "messages":
                 message, metadata = chunk
                 if metadata.get("langgraph_node") == "model" and isinstance(message, AIMessage):
-                    if metadata.get("langgraph_step") != model_step:
+                    if step_id is None or metadata.get("langgraph_step") != model_step:
                         model_step = metadata.get("langgraph_step")
-                        await emit("model.started", {})
+                        step_id = f"{run_id}:model:{model_step}"
+                        # 同一 logical step 的新 started 表示重试；消费者应清空旧 partial。
+                        await emit("model.started", {"step_id": step_id})
                     if isinstance(message.content, str) and message.content:
-                        await emit("model.delta", {"text": message.content})
+                        await emit("model.delta", {"step_id": step_id, "text": message.content})
             elif mode == "updates":
                 for node, update in chunk.items():
                     if not isinstance(update, dict):
                         continue
                     for message in update.get("messages", []):
                         if node == "model" and isinstance(message, AIMessage):
-                            await emit("model.completed", {})
+                            if step_id is None:
+                                model_step = len(
+                                    [
+                                        m
+                                        for m in update.get("messages", [])
+                                        if isinstance(m, AIMessage)
+                                    ]
+                                )
+                                step_id = f"{run_id}:model:{model_step}"
+                                await emit("model.started", {"step_id": step_id})
+                            await emit("model.completed", {"step_id": step_id})
+                            step_id = None
                             for call in message.tool_calls:
                                 await emit(
                                     "tool.started",

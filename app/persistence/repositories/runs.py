@@ -8,6 +8,32 @@ from app.persistence.database import Message, Run, Session, new_id
 LEASE_SECONDS = 45
 
 
+class RunRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def visible(self, run_id: str, user_id: str):
+        return await self.db.scalar(
+            select(Run)
+            .join(Session, Run.session_id == Session.id)
+            .where(Run.id == run_id, Session.user_id == user_id)
+            .execution_options(populate_existing=True)
+        )
+
+    async def answer(self, message_id: str):
+        return await self.db.get(Message, message_id)
+
+    async def cancel_pending(self, run_id: str) -> bool:
+        return await cancel_pending(self.db, run_id)
+
+    async def status(self, run_id: str) -> str | None:
+        await self.release_read()
+        return await self.db.scalar(select(Run.status).where(Run.id == run_id))
+
+    async def release_read(self) -> None:
+        await self.db.rollback()  # SSE 等待期间不持有数据库只读事务。
+
+
 async def claim_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
     now = datetime.now(UTC)
     statement = (
