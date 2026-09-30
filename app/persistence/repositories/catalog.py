@@ -169,6 +169,8 @@ class CatalogRepository:
             self.db.add(agent)
         for key, value in values.items():
             setattr(agent, key, value)
+        if agent.id is not None:
+            agent.revision += 1
         agent.tools = tools
         await self.db.commit()
         await self.db.refresh(agent)

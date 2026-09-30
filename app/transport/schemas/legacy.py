@@ -51,6 +51,8 @@ class ToolIn(BaseModel):
     type: Literal["NATIVE", "HTTP"]
     config: dict = Field(default_factory=dict)
     policy: dict = Field(default_factory=dict)
+    effect_type: Literal["READ_ONLY"] = "READ_ONLY"
+    failure_policy: Literal["RETURN_ERROR", "FAIL_RUN"] = "RETURN_ERROR"
     enabled: bool = True
 
     @model_validator(mode="after")

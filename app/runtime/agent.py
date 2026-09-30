@@ -32,6 +32,9 @@ class LangChainAgentRuntime:
         system_prompt: str,
         max_model_calls: int,
         checkpointer=None,
+        tool_execution_store=None,
+        run_id: str | None = None,
+        tool_policies: dict | None = None,
     ) -> None:
         self.graph = create_agent(
             model=model,
@@ -40,7 +43,7 @@ class LangChainAgentRuntime:
             middleware=[
                 RunContextMiddleware(),
                 TracingMiddleware(),
-                ToolErrorMiddleware(),
+                ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
                 ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
             ],
             context_schema=RunContext,

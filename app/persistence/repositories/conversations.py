@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.database import AgentDefinition, Message, ModelConfig, Run, Session, new_id
+from app.persistence.execution_spec import freeze_execution_spec
 
 
 class ConversationRepository:
@@ -105,7 +106,11 @@ class ConversationRepository:
             await self.db.execute(
                 select(Message, Run)
                 .join(Run, Run.message_id == Message.id)
-                .where(Message.user_id == user_id, Message.client_message_id == client_message_id)
+                .where(
+                    Message.user_id == user_id,
+                    Message.client_message_id == client_message_id,
+                    Run.parent_run_id.is_(None),
+                )
             )
         ).first()
 
@@ -133,12 +138,22 @@ class ConversationRepository:
             content=content,
             client_message_id=client_message_id,
         )
-        run = Run(id=new_id(), session_id=session_id, message_id=message.id, status="PENDING")
         session = await self.db.get(Session, session_id)
+        agent = await self.db.get(AgentDefinition, session.agent_id)
+        model = await self.db.get(ModelConfig, agent.model_id)
+        spec = freeze_execution_spec(agent, model)
+        run = Run(
+            id=new_id(),
+            session_id=session_id,
+            message_id=message.id,
+            status="PENDING",
+            execution_spec_id=spec.id,
+            runtime_version=spec.runtime_version,
+        )
         session.last_active_at = datetime.now(UTC)
         if not session.title:
             session.title = content[:100]
-        self.db.add_all([message, run])
+        self.db.add_all([message, spec, run])
         try:
             await self.db.commit()
         except IntegrityError:

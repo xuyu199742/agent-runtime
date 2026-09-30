@@ -6,10 +6,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.infrastructure.passwords import hash_password
 from app.main import app
-from app.persistence.database import AgentDefinition, ModelConfig, User, get_db
+from app.persistence.database import AgentDefinition, ExecutionSpec, ModelConfig, Run, User, get_db
 
 
-async def test_client_routes_hide_config_and_isolate_conversations():
+async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -87,6 +87,47 @@ async def test_client_routes_hide_config_and_isolate_conversations():
                 )
             ).status_code == 404
             run_id = sent.json()["run"]["id"]
+            async with factory() as db:
+                run = await db.get(Run, run_id)
+                spec = await db.get(ExecutionSpec, run.execution_spec_id)
+                assert spec.agent_revision == 1
+                assert spec.snapshot["system_prompt"] == "private-prompt"
+                assert spec.snapshot["model"]["model_name"] == "private-model"
+                agent_db = await db.get(AgentDefinition, agent.id)
+                agent_db.system_prompt = "changed-after-submit"
+                await db.commit()
+            async with factory() as db:
+                preserved = await db.get(ExecutionSpec, run.execution_spec_id)
+                assert preserved.snapshot["system_prompt"] == "private-prompt"
+            from app.worker import runner
+
+            captured = {}
+
+            class CapturingRuntime:
+                def __init__(
+                    self, model, tools, system_prompt, max_model_calls, checkpointer, **_kwargs
+                ):
+                    captured.update(
+                        model=model,
+                        tools=tools,
+                        system_prompt=system_prompt,
+                        max_model_calls=max_model_calls,
+                    )
+
+                async def run(self, *_args, **_kwargs):
+                    return "ok"
+
+            async def no_publish(*_args):
+                return None
+
+            monkeypatch.setattr(runner, "session_factory", factory)
+            monkeypatch.setattr(runner, "LangChainAgentRuntime", CapturingRuntime)
+            monkeypatch.setattr(runner, "build_model", lambda config: config.definition)
+            monkeypatch.setattr(runner, "build_tools", lambda tools: tools)
+            monkeypatch.setattr(runner, "safe_publish", no_publish)
+            assert await runner.run_agent(run_id, False, None, None, None) == "ok"
+            assert captured["system_prompt"] == "private-prompt"
+            assert captured["model"].model_name == "private-model"
             assert (
                 await client.get(f"/api/v1/client/runs/{run_id}", headers=bob)
             ).status_code == 404

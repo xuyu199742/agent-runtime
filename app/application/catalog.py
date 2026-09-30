@@ -149,6 +149,7 @@ def agent_out(agent) -> dict:
         "system_prompt",
         "model_id",
         "max_model_calls",
+        "revision",
         "enabled",
         "created_at",
         "updated_at",

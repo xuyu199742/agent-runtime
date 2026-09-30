@@ -43,6 +43,38 @@ class RunService:
         context = await self.repository.admin_context(run_id)
         return run, answer.content if answer else None, context
 
+    async def execution_spec(self, run_id: str):
+        run = await self.repository.get(run_id)
+        if run is None:
+            raise NotFound("Run 不存在")
+        if run.execution_spec_id is None:
+            return None
+        spec = await self.repository.execution_spec(run.execution_spec_id)
+        if spec is None:
+            raise NotFound("ExecutionSpec 不存在")
+        snapshot = {**spec.snapshot, "model": {**spec.snapshot["model"]}}
+        snapshot["model"].pop("api_key_encrypted", None)
+        return {
+            "id": spec.id,
+            "agent_id": spec.agent_id,
+            "agent_revision": spec.agent_revision,
+            "schema_version": spec.schema_version,
+            "runtime_version": spec.runtime_version,
+            "snapshot": snapshot,
+            "created_at": spec.created_at,
+        }
+
+    async def tool_executions(self, run_id: str):
+        if await self.repository.get(run_id) is None:
+            raise NotFound("Run 不存在")
+        return await self.repository.tool_executions(run_id)
+
+    async def retry(self, run_id: str):
+        retry = await self.repository.retry(run_id)
+        if retry is None:
+            raise NotFound("Run 不存在")
+        return retry
+
     async def cancel_pending(self, run_id: str) -> bool:
         return await self.repository.cancel_pending(run_id)
 

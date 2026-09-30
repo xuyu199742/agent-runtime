@@ -16,6 +16,7 @@ from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
     AgentDefinition,
+    ExecutionSpec,
     ModelConfig,
     Run,
     Session,
@@ -23,6 +24,7 @@ from app.persistence.database import (
 )
 from app.persistence.repositories.conversations import ConversationRepository
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run
+from app.persistence.repositories.tool_executions import ToolExecutionStore
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
@@ -91,8 +93,20 @@ async def run_agent(
         session = await db.get(Session, run.session_id)
         agent = await db.get(AgentDefinition, session.agent_id)
         model_config = await db.get(ModelConfig, agent.model_id)
+        spec = await db.get(ExecutionSpec, run.execution_spec_id) if run.execution_spec_id else None
+        if run.execution_spec_id and spec is None:
+            raise ValueError("Run 配置快照不存在")
+        snapshot = spec.snapshot if spec else None
+        context_policy = (
+            snapshot["context"]
+            if snapshot
+            else {
+                "max_messages": get_settings().context_max_messages,
+                "max_tokens": get_settings().context_max_tokens,
+            }
+        )
         history = await ConversationRepository(db).recent_messages(
-            session.id, run.created_at, get_settings().context_max_messages
+            session.id, run.created_at, context_policy["max_messages"]
         )
 
     structlog.contextvars.clear_contextvars()
@@ -108,35 +122,65 @@ async def run_agent(
 
     if not resumed:
         await safe_publish(events, run_id, "run.started", {})
+    model_data = (
+        snapshot["model"]
+        if snapshot
+        else {
+            "provider": model_config.provider,
+            "model_name": model_config.model_name,
+            "base_url": model_config.base_url,
+            "config": model_config.config,
+            "api_key_encrypted": model_config.api_key_encrypted,
+        }
+    )
+    tool_data = (
+        snapshot["tools"]
+        if snapshot
+        else [
+            {
+                "name": tool.name,
+                "type": tool.type,
+                "description": tool.description,
+                "config": tool.config,
+                "policy": tool.policy,
+                "effect_type": tool.effect_type,
+                "failure_policy": tool.failure_policy,
+            }
+            for tool in agent.tools
+        ]
+    )
     runtime = LangChainAgentRuntime(
         model=build_model(
             resolve_model_config(
                 ModelDefinition(
-                    provider=model_config.provider,
-                    model_name=model_config.model_name,
-                    base_url=model_config.base_url,
-                    config=model_config.config,
-                    enabled=model_config.enabled,
+                    provider=model_data["provider"],
+                    model_name=model_data["model_name"],
+                    base_url=model_data["base_url"],
+                    config=model_data["config"],
+                    enabled=True if snapshot else model_config.enabled,
                 ),
-                model_config.api_key_encrypted,
+                model_data["api_key_encrypted"],
             )
         ),
         tools=build_tools(
             [
                 ToolDefinition(
-                    name=tool.name,
-                    type=tool.type,
-                    description=tool.description,
-                    config=tool.config,
-                    policy=tool.policy,
-                    enabled=tool.enabled,
+                    name=tool["name"],
+                    type=tool["type"],
+                    description=tool["description"],
+                    config=tool["config"],
+                    policy=tool["policy"],
+                    enabled=True,
                 )
-                for tool in agent.tools
+                for tool in tool_data
             ]
         ),
-        system_prompt=agent.system_prompt,
-        max_model_calls=agent.max_model_calls,
+        system_prompt=snapshot["system_prompt"] if snapshot else agent.system_prompt,
+        max_model_calls=snapshot["max_model_calls"] if snapshot else agent.max_model_calls,
         checkpointer=saver,
+        tool_execution_store=ToolExecutionStore(session_factory),
+        run_id=run_id,
+        tool_policies={tool["name"]: tool for tool in tool_data},
     )
 
     async def emit(kind: str, data: dict) -> None:
@@ -152,8 +196,8 @@ async def run_agent(
         run_id,
         build_context(
             [ConversationTurn(role=item.role, content=item.content) for item in history],
-            max_messages=get_settings().context_max_messages,
-            max_tokens=get_settings().context_max_tokens,
+            max_messages=context_policy["max_messages"],
+            max_tokens=context_policy["max_tokens"],
         ),
         emit,
         should_cancel,
