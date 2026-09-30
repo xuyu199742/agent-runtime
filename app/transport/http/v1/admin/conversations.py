@@ -10,6 +10,7 @@ from app.transport.schemas.client import AgentSummary, MessageOut
 
 router = APIRouter(prefix="/api/v1/admin/conversations", tags=["admin-conversations"])
 Viewer = Annotated[Principal, Depends(require("conversation:view"))]
+ArtifactViewer = Annotated[Principal, Depends(require("artifact:view"))]
 
 
 def summary(session, agent_name, last_message=None):
@@ -70,6 +71,7 @@ async def messages(
 async def artifacts_for_conversation(
     conversation_id: str,
     _user: Viewer,
+    _artifact_user: ArtifactViewer,
     conversation: Conversation,
     artifacts: Artifacts,
     page: int = Query(default=1, ge=1),

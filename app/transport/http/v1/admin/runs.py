@@ -14,6 +14,7 @@ from app.transport.http.v1.dependencies import require
 
 router = APIRouter(prefix="/api/v1/admin/runs", tags=["admin-runs"])
 Viewer = Annotated[Principal, Depends(require("run:view"))]
+ArtifactViewer = Annotated[Principal, Depends(require("artifact:view"))]
 Canceller = Annotated[Principal, Depends(require("run:cancel"))]
 Retrier = Annotated[Principal, Depends(require("run:retry"))]
 
@@ -124,6 +125,7 @@ async def trace(
 async def artifacts_for_run(
     run_id: str,
     _user: Viewer,
+    _artifact_user: ArtifactViewer,
     runs: Runs,
     artifacts: Artifacts,
     page: int = Query(default=1, ge=1),
