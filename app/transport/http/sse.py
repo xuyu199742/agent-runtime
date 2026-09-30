@@ -19,7 +19,20 @@ async def stream_events(
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
-    await runs.visible(run_id, get_settings().dev_user_id)
+    return await stream_events_for_user(
+        run_id, request, runs, get_settings().dev_user_id, after, last_event_id
+    )
+
+
+async def stream_events_for_user(
+    run_id: str,
+    request: Request,
+    runs: Runs,
+    user_id: str,
+    after: int = 0,
+    last_event_id: str | None = None,
+):
+    await runs.visible(run_id, user_id)
     await runs.release_read()
     if after == 0 and last_event_id:
         try:

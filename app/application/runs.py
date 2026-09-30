@@ -19,6 +19,30 @@ class RunService:
         )
         return run, answer.content if answer else None
 
+    async def list_runs(
+        self,
+        page: int,
+        page_size: int,
+        user_id=None,
+        status=None,
+        agent_id=None,
+        worker_id=None,
+        error_code=None,
+    ):
+        return await self.repository.list_runs(
+            page, page_size, user_id, status, agent_id, worker_id, error_code
+        )
+
+    async def admin_detail(self, run_id: str):
+        run = await self.repository.get(run_id)
+        if run is None:
+            raise NotFound("Run 不存在")
+        answer = (
+            await self.repository.answer(run.answer_message_id) if run.answer_message_id else None
+        )
+        context = await self.repository.admin_context(run_id)
+        return run, answer.content if answer else None, context
+
     async def cancel_pending(self, run_id: str) -> bool:
         return await self.repository.cancel_pending(run_id)
 

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6380/0"
     model_secret_key: str | None = Field(default=None, repr=False, exclude=True)
     dev_user_id: str = "local-dev-user"
+    legacy_api_enabled: bool = False
     http_tool_allowed_hosts: str = ""
     context_max_messages: int = Field(default=30, ge=1, le=100)
     context_max_tokens: int = Field(default=12000, ge=100, le=1000000)

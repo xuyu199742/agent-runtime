@@ -1,4 +1,8 @@
-# Agent Server V0.1
+# Agent Runtime V0.2（开发中）
+
+V0.2 API 统一使用 `/api/v1`：认证在 `/auth`，用户对话在 `/client`，管理配置在 `/admin`。先运行 `uv run alembic upgrade head`，再运行 `uv run python -m scripts.bootstrap_admin --username admin --display-name 管理员` 创建首个管理员，命令会交互式读取密码。登录取得访问 token 后在请求中传入 `Authorization: Bearer <token>`。访问 token 失效后通过 `/api/v1/auth/refresh` 更新；退出时调用 `/api/v1/auth/logout`。本地接口文档位于 `/docs`。
+
+旧 `/api/*` 默认关闭；仅迁移期可设置 `LEGACY_API_ENABLED=true`。旧接口使用固定开发用户身份，不得对外开放。V0.2 分阶段实施计划见 [docs/v02-implementation-plan.md](docs/v02-implementation-plan.md)。以下 V0.1 说明仅用于旧接口迁移参考。
 
 独立的 Python Agent 服务端。业务配置在 PostgreSQL，异步 Run 和 SSE 实时事件由 Redis Streams 协调，Agent 执行使用 LangChain `create_agent` 与 LangGraph PostgreSQL checkpoint。
 

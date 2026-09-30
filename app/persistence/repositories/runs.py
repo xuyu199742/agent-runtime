@@ -1,9 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.database import Message, Run, Session, new_id
+from app.persistence.database import AgentDefinition, Message, Run, Session, new_id
 
 LEASE_SECONDS = 45
 
@@ -20,8 +20,56 @@ class RunRepository:
             .execution_options(populate_existing=True)
         )
 
+    async def get(self, run_id: str):
+        return await self.db.get(Run, run_id)
+
     async def answer(self, message_id: str):
         return await self.db.get(Message, message_id)
+
+    async def list_runs(
+        self,
+        page: int,
+        page_size: int,
+        user_id: str | None = None,
+        status: str | None = None,
+        agent_id: str | None = None,
+        worker_id: str | None = None,
+        error_code: str | None = None,
+    ):
+        statement = (
+            select(Run, Session.user_id, AgentDefinition.id, AgentDefinition.name)
+            .join(Session, Run.session_id == Session.id)
+            .join(AgentDefinition, Session.agent_id == AgentDefinition.id)
+        )
+        if user_id is not None:
+            statement = statement.where(Session.user_id == user_id)
+        if status is not None:
+            statement = statement.where(Run.status == status)
+        if agent_id is not None:
+            statement = statement.where(AgentDefinition.id == agent_id)
+        if worker_id is not None:
+            statement = statement.where(Run.lease_owner == worker_id)
+        if error_code is not None:
+            statement = statement.where(Run.error_code == error_code)
+        total = await self.db.scalar(select(func.count()).select_from(statement.subquery()))
+        rows = (
+            await self.db.execute(
+                statement.order_by(Run.created_at.desc(), Run.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        return list(rows), total or 0
+
+    async def admin_context(self, run_id: str):
+        return (
+            await self.db.execute(
+                select(Session.user_id, AgentDefinition.id, AgentDefinition.name)
+                .join(AgentDefinition, AgentDefinition.id == Session.agent_id)
+                .join(Run, Run.session_id == Session.id)
+                .where(Run.id == run_id)
+            )
+        ).first()
 
     async def cancel_pending(self, run_id: str) -> bool:
         return await cancel_pending(self.db, run_id)
@@ -80,6 +128,7 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
     if run is None:
         return False
     session = await db.get(Session, run.session_id)
+    session.last_active_at = datetime.now(UTC)
     answer_id = new_id()
     db.add(
         Message(
