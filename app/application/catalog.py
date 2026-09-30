@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.domain.errors import InvalidConfiguration, NotFound
+from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.persistence.repositories.catalog import CatalogRepository
 
 
@@ -47,6 +47,46 @@ class CatalogService:
     async def list_agents(self):
         return await self.catalog.list_agents()
 
+    async def public_agents(self):
+        return await self.catalog.public_agents()
+
+    async def page_agents(
+        self,
+        page: int,
+        page_size: int,
+        keyword: str | None,
+        enabled=None,
+        sort_by="name",
+        sort_order="asc",
+    ):
+        return await self.catalog.page_agents(
+            page, page_size, keyword, enabled, sort_by, sort_order
+        )
+
+    async def page_models(
+        self,
+        page: int,
+        page_size: int,
+        keyword: str | None,
+        enabled=None,
+        sort_by="name",
+        sort_order="asc",
+    ):
+        return await self.catalog.page_models(
+            page, page_size, keyword, enabled, sort_by, sort_order
+        )
+
+    async def page_tools(
+        self,
+        page: int,
+        page_size: int,
+        keyword: str | None,
+        enabled=None,
+        sort_by="name",
+        sort_order="asc",
+    ):
+        return await self.catalog.page_tools(page, page_size, keyword, enabled, sort_by, sort_order)
+
     async def get_agent(self, agent_id: str):
         agent = await self.catalog.agent(agent_id)
         if agent is None:
@@ -87,6 +127,18 @@ class CatalogService:
 
     async def delete_tool(self, tool_id: str):
         await self.catalog.delete(await self.get_tool(tool_id))
+
+    async def change_state(self, kind: str, entity_id: str, enabled: bool | None):
+        getter = {"agent": self.get_agent, "model": self.get_model, "tool": self.get_tool}[kind]
+        entity = await getter(entity_id)
+        if entity.archived_at is not None:
+            raise Conflict("已归档配置不能修改")
+        if enabled is not True and await self.catalog.active_run_uses(entity):
+            raise Conflict("仍有执行中的 Run 使用该配置")
+        if enabled is None:
+            await self.catalog.archive(entity)
+            return entity
+        return await self.catalog.set_enabled(entity, enabled)
 
 
 def agent_out(agent) -> dict:

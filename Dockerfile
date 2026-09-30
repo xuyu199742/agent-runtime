@@ -6,6 +6,7 @@ ENV UV_HTTP_TIMEOUT=900 UV_CONCURRENT_DOWNLOADS=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
+COPY scripts ./scripts
 COPY migrations ./migrations
 COPY alembic.ini ./
 RUN uv sync --frozen --no-dev
@@ -14,6 +15,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY --from=build /app/.venv ./.venv
 COPY --from=build /app/app ./app
+COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/migrations ./migrations
 COPY --from=build /app/alembic.ini ./alembic.ini
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
