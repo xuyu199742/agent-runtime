@@ -37,6 +37,7 @@ async def test_observability_routes_require_permissions():
             yield db
 
     app.dependency_overrides[get_db] = override_db
+    previous_redis = getattr(app.state, "redis", None)
     app.state.redis = redis
     try:
         async with factory() as db:
@@ -70,5 +71,9 @@ async def test_observability_routes_require_permissions():
             assert (await client.get("/api/v1/admin/artifacts", headers=headers)).status_code == 403
     finally:
         app.dependency_overrides.clear()
+        if previous_redis is None:
+            del app.state.redis
+        else:
+            app.state.redis = previous_redis
         await redis.aclose()
         await engine.dispose()
