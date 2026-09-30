@@ -14,6 +14,7 @@ from app.persistence.database import (
     new_id,
 )
 from app.persistence.repositories.approvals import ApprovalRepository
+from app.persistence.repositories.traces import TraceRepository, trace_event
 
 LEASE_SECONDS = 45
 
@@ -43,6 +44,20 @@ class RunRepository:
                     select(ToolExecution)
                     .where(ToolExecution.run_id == run_id)
                     .order_by(ToolExecution.started_at, ToolExecution.id)
+                )
+            ).all()
+        )
+
+    async def trace(self, run_id: str, page: int, page_size: int):
+        return await TraceRepository(self.db).page(run_id, page, page_size)
+
+    async def active_for_worker(self, worker_id: str) -> list[str]:
+        return list(
+            (
+                await self.db.scalars(
+                    select(Run.id)
+                    .where(Run.worker_id == worker_id, Run.status == "RUNNING")
+                    .order_by(Run.created_at)
                 )
             ).all()
         )
@@ -224,6 +239,7 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
     if updated is None:
         await db.rollback()
         return False
+    db.add(trace_event(run_id, "run.completed", {}))
     await db.commit()
     return True
 
@@ -240,6 +256,8 @@ async def wait_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
         .values(status="WAITING", waiting_at=datetime.now(UTC), lease_owner=None, lease_until=None)
         .returning(Run.id)
     )
+    if updated is not None:
+        db.add(trace_event(run_id, "run.waiting", {}))
     await db.commit()
     return updated is not None
 
@@ -267,6 +285,12 @@ async def end_run(
         .returning(Run.id)
     )
     updated = await db.scalar(statement)
+    if updated is not None:
+        db.add(
+            trace_event(
+                run_id, "run.failed" if status == "FAILED" else "run.cancelled", {"code": code}
+            )
+        )
     await db.commit()
     return updated is not None
 
@@ -279,6 +303,8 @@ async def cancel_pending(db: AsyncSession, run_id: str) -> bool:
         .returning(Run.id)
     )
     updated = await db.scalar(statement)
+    if updated is not None:
+        db.add(trace_event(run_id, "run.cancelled", {}))
     await db.commit()
     return updated is not None
 

@@ -26,6 +26,7 @@ from app.persistence.repositories.approvals import ApprovalRepository
 from app.persistence.repositories.conversations import ConversationRepository
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run, wait_run
 from app.persistence.repositories.tool_executions import ToolExecutionStore
+from app.persistence.repositories.traces import TRACE_TYPES, TraceRepository
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
@@ -53,6 +54,9 @@ def classify_run_error(exc: Exception) -> str:
 
 
 async def safe_publish(events: EventStore, run_id: str, kind: str, data: dict) -> None:
+    if kind in TRACE_TYPES - {"run.completed", "run.failed", "run.cancelled", "run.waiting"}:
+        async with session_factory() as db:
+            await TraceRepository(db).record(run_id, kind, data)
     try:
         await events.publish(run_id, kind, data)
     except RedisError:
@@ -121,8 +125,7 @@ async def run_agent(
         log_context["worker_id"] = worker_id
     structlog.contextvars.bind_contextvars(**log_context)
 
-    if not resumed:
-        await safe_publish(events, run_id, "run.started", {})
+    await safe_publish(events, run_id, "run.resumed" if resumed else "run.started", {})
     model_data = (
         snapshot["model"]
         if snapshot

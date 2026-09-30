@@ -3,7 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from app.application.auth import Principal
-from app.transport.http.common import Conversation
+from app.transport.http.common import Artifacts, Conversation
+from app.transport.http.v1.artifact_views import artifact_page
 from app.transport.http.v1.dependencies import require
 from app.transport.schemas.client import AgentSummary, MessageOut
 
@@ -63,3 +64,17 @@ async def messages(
         MessageOut(id=row.id, role=row.role, content=row.content, created_at=row.created_at)
         for row in rows
     ]
+
+
+@router.get("/{conversation_id}/artifacts")
+async def artifacts_for_conversation(
+    conversation_id: str,
+    _user: Viewer,
+    conversation: Conversation,
+    artifacts: Artifacts,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    await conversation.admin_session(conversation_id)
+    rows, total = await artifacts.conversation(conversation_id, page, page_size)
+    return artifact_page(rows, total, page, page_size)

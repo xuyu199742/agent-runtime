@@ -4,22 +4,33 @@ import structlog
 from redis.exceptions import RedisError
 
 from app.messaging.run_queue import RunQueue
+from app.messaging.worker_registry import WorkerActivity
 from app.persistence.database import session_factory
 from app.persistence.repositories.runs import pending_run_ids
 
 log = structlog.get_logger()
 
 
-async def consume_queue(queue: RunQueue, worker_id: str, handler, concurrency: int) -> None:
+async def consume_queue(
+    queue: RunQueue,
+    worker_id: str,
+    handler,
+    concurrency: int,
+    activity: WorkerActivity | None = None,
+) -> None:
     """只在有空闲执行槽时领取一条消息，子任务由 TaskGroup 统一管理。"""
     slots = asyncio.Semaphore(concurrency)
 
     async def handle_entry(stream_id: str, fields: dict) -> None:
+        if activity is not None:
+            activity.running += 1
         try:
             await handler(stream_id, fields)
         except Exception:
             log.exception("Run 消费失败，保留未确认消息", stream_id=stream_id)
         finally:
+            if activity is not None:
+                activity.running -= 1
             slots.release()
 
     async with asyncio.TaskGroup() as scope:

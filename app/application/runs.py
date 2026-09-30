@@ -69,6 +69,11 @@ class RunService:
             raise NotFound("Run 不存在")
         return await self.repository.tool_executions(run_id)
 
+    async def trace(self, run_id: str, page: int, page_size: int):
+        if await self.repository.get(run_id) is None:
+            raise NotFound("Run 不存在")
+        return await self.repository.trace(run_id, page, page_size)
+
     async def retry(self, run_id: str):
         retry = await self.repository.retry(run_id)
         if retry is None:

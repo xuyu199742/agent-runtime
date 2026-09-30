@@ -29,6 +29,9 @@ class RunQueue:
         )
         return bool(result)
 
+    async def depth(self) -> int:
+        return await self.redis.xlen(self.stream)
+
     async def read(
         self, consumer: str, block_ms: int = 5000, count: int = 10
     ) -> list[tuple[str, dict]]:

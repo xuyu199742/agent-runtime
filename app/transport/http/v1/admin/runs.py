@@ -6,9 +6,10 @@ from redis.exceptions import RedisError
 from app.application.auth import Principal
 from app.messaging.client import close_if_owned, redis_for_request
 from app.messaging.run_queue import RunQueue
-from app.transport.http.common import Audit, Runs
+from app.transport.http.common import Artifacts, Audit, Runs
 from app.transport.http.runs import dispatch_cancel
 from app.transport.http.v1.admin.common import record_action
+from app.transport.http.v1.artifact_views import artifact_page
 from app.transport.http.v1.dependencies import require
 
 router = APIRouter(prefix="/api/v1/admin/runs", tags=["admin-runs"])
@@ -96,6 +97,41 @@ async def tool_executions(run_id: str, _user: Viewer, runs: Runs):
         }
         for row in rows
     ]
+
+
+@router.get("/{run_id}/trace")
+async def trace(
+    run_id: str,
+    _user: Viewer,
+    runs: Runs,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    await runs.admin_detail(run_id)
+    rows, total = await runs.trace(run_id, page, page_size)
+    return {
+        "items": [
+            {"id": row.id, "type": row.event_type, "data": row.data, "created_at": row.created_at}
+            for row in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+@router.get("/{run_id}/artifacts")
+async def artifacts_for_run(
+    run_id: str,
+    _user: Viewer,
+    runs: Runs,
+    artifacts: Artifacts,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    await runs.admin_detail(run_id)
+    rows, total = await artifacts.run(run_id, page, page_size)
+    return artifact_page(rows, total, page, page_size)
 
 
 @router.post("/{run_id}/cancel")

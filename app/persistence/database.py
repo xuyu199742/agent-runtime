@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -315,6 +316,35 @@ class Approval(Base):
     decided_by: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RunTraceEvent(Base):
+    __tablename__ = "run_trace_events"
+    __table_args__ = (Index("ix_run_trace_events_run_id_id", "run_id", "id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    event_type: Mapped[str] = mapped_column(String(50))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (Index("ix_artifacts_conversation_created", "conversation_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), index=True)
+    message_id: Mapped[str | None] = mapped_column(ForeignKey("messages.id"))
+    name: Mapped[str] = mapped_column(String(250))
+    type: Mapped[str] = mapped_column(String(50))
+    mime_type: Mapped[str] = mapped_column(String(150))
+    storage_provider: Mapped[str] = mapped_column(String(20))
+    storage_key: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(BigInteger)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
