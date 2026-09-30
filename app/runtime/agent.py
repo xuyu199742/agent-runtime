@@ -6,7 +6,9 @@ from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.types import Command
 
+from app.runtime.approval import ApprovalMiddleware
 from app.runtime.middleware import RunContextMiddleware, ToolErrorMiddleware, TracingMiddleware
 
 
@@ -18,6 +20,11 @@ class RunContext(TypedDict, total=False):
 
 class RunCancelled(Exception):
     pass
+
+
+class RunWaiting(Exception):
+    def __init__(self, approvals: list[dict]):
+        self.approvals = approvals
 
 
 EventSink = Callable[[str, dict], Awaitable[None]]
@@ -32,6 +39,10 @@ class LangChainAgentRuntime:
         system_prompt: str,
         max_model_calls: int,
         checkpointer=None,
+        tool_execution_store=None,
+        run_id: str | None = None,
+        tool_policies: dict | None = None,
+        approval_session_factory=None,
     ) -> None:
         self.graph = create_agent(
             model=model,
@@ -40,7 +51,8 @@ class LangChainAgentRuntime:
             middleware=[
                 RunContextMiddleware(),
                 TracingMiddleware(),
-                ToolErrorMiddleware(),
+                ApprovalMiddleware(approval_session_factory, run_id, tool_policies),
+                ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
                 ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
             ],
             context_schema=RunContext,
@@ -57,6 +69,7 @@ class LangChainAgentRuntime:
         session_id: str | None = None,
         user_id: str | None = None,
         resume: bool = False,
+        approval_decisions: dict[str, bool] | None = None,
     ) -> str:
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 1000}
         input_state = {"messages": list(messages)}
@@ -67,8 +80,9 @@ class LangChainAgentRuntime:
                     for message in reversed(state.values.get("messages", [])):
                         if isinstance(message, AIMessage) and not message.tool_calls:
                             return message.text
-                input_state = None
+                input_state = Command(resume=approval_decisions) if approval_decisions else None
         answer = ""
+        pending_approvals = []
         model_step = None
         step_id = None
         async for mode, chunk in self.graph.astream(
@@ -90,6 +104,9 @@ class LangChainAgentRuntime:
                     if isinstance(message.content, str) and message.content:
                         await emit("model.delta", {"step_id": step_id, "text": message.content})
             elif mode == "updates":
+                if "__interrupt__" in chunk:
+                    pending_approvals = [item.value for item in chunk["__interrupt__"]]
+                    continue
                 for node, update in chunk.items():
                     if not isinstance(update, dict):
                         continue
@@ -119,4 +136,6 @@ class LangChainAgentRuntime:
                             await emit(
                                 kind, {"name": message.name, "tool_call_id": message.tool_call_id}
                             )
+        if pending_approvals:
+            raise RunWaiting(pending_approvals)
         return answer

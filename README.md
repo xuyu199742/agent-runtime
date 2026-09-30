@@ -4,6 +4,8 @@ V0.2 API 统一使用 `/api/v1`：认证在 `/auth`，用户对话在 `/client`�
 
 旧 `/api/*` 默认关闭；仅迁移期可设置 `LEGACY_API_ENABLED=true`。旧接口使用固定开发用户身份，不得对外开放。V0.2 分阶段实施计划见 [docs/v02-implementation-plan.md](docs/v02-implementation-plan.md)。以下 V0.1 说明仅用于旧接口迁移参考。
 
+V0.2 的配置快照、ToolExecution、审批恢复和 Retry 语义见 [docs/v02-runtime-contract.md](docs/v02-runtime-contract.md)。
+
 独立的 Python Agent 服务端。业务配置在 PostgreSQL，异步 Run 和 SSE 实时事件由 Redis Streams 协调，Agent 执行使用 LangChain `create_agent` 与 LangGraph PostgreSQL checkpoint。
 
 ## 本地启动

@@ -3,7 +3,17 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.database import AgentDefinition, Message, Run, Session, new_id
+from app.domain.errors import Conflict
+from app.persistence.database import (
+    AgentDefinition,
+    ExecutionSpec,
+    Message,
+    Run,
+    Session,
+    ToolExecution,
+    new_id,
+)
+from app.persistence.repositories.approvals import ApprovalRepository
 
 LEASE_SECONDS = 45
 
@@ -22,6 +32,54 @@ class RunRepository:
 
     async def get(self, run_id: str):
         return await self.db.get(Run, run_id)
+
+    async def execution_spec(self, spec_id: str):
+        return await self.db.get(ExecutionSpec, spec_id)
+
+    async def tool_executions(self, run_id: str):
+        return list(
+            (
+                await self.db.scalars(
+                    select(ToolExecution)
+                    .where(ToolExecution.run_id == run_id)
+                    .order_by(ToolExecution.started_at, ToolExecution.id)
+                )
+            ).all()
+        )
+
+    async def retry(self, run_id: str):
+        original = await self.db.get(Run, run_id)
+        if original is None:
+            return None
+        await self.db.execute(
+            select(Session.id).where(Session.id == original.session_id).with_for_update()
+        )
+        if original.status != "FAILED":
+            raise Conflict("只有失败的 Run 可以重试")
+        active = await self.db.scalar(
+            select(Run.id)
+            .where(
+                Run.session_id == original.session_id,
+                Run.status.in_(["PENDING", "RUNNING", "WAITING"]),
+            )
+            .limit(1)
+        )
+        if active is not None:
+            raise Conflict("会话中已有执行中的 Run")
+        retry = Run(
+            session_id=original.session_id,
+            message_id=original.message_id,
+            status="PENDING",
+            execution_spec_id=original.execution_spec_id,
+            runtime_version=original.runtime_version,
+            parent_run_id=original.id,
+            attempt=original.attempt + 1,
+            origin="RETRY",
+        )
+        self.db.add(retry)
+        await self.db.commit()
+        await self.db.refresh(retry)
+        return retry
 
     async def answer(self, message_id: str):
         return await self.db.get(Message, message_id)
@@ -48,7 +106,7 @@ class RunRepository:
         if agent_id is not None:
             statement = statement.where(AgentDefinition.id == agent_id)
         if worker_id is not None:
-            statement = statement.where(Run.lease_owner == worker_id)
+            statement = statement.where(Run.worker_id == worker_id)
         if error_code is not None:
             statement = statement.where(Run.error_code == error_code)
         total = await self.db.scalar(select(func.count()).select_from(statement.subquery()))
@@ -74,6 +132,9 @@ class RunRepository:
     async def cancel_pending(self, run_id: str) -> bool:
         return await cancel_pending(self.db, run_id)
 
+    async def cancel_waiting(self, run_id: str) -> bool:
+        return await ApprovalRepository(self.db).cancel_waiting(run_id)
+
     async def status(self, run_id: str) -> str | None:
         await self.release_read()
         return await self.db.scalar(select(Run.status).where(Run.id == run_id))
@@ -96,7 +157,9 @@ async def claim_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
         .values(
             status="RUNNING",
             lease_owner=worker_id,
+            worker_id=worker_id,
             lease_until=now + timedelta(seconds=LEASE_SECONDS),
+            started_at=func.coalesce(Run.started_at, now),
         )
         .returning(Run.id)
     )
@@ -148,7 +211,13 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
             Run.lease_owner == worker_id,
             Run.lease_until > datetime.now(UTC),
         )
-        .values(status="COMPLETED", answer_message_id=answer_id, lease_owner=None, lease_until=None)
+        .values(
+            status="COMPLETED",
+            answer_message_id=answer_id,
+            lease_owner=None,
+            lease_until=None,
+            completed_at=datetime.now(UTC),
+        )
         .returning(Run.id)
     )
     updated = await db.scalar(statement)
@@ -157,6 +226,22 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
         return False
     await db.commit()
     return True
+
+
+async def wait_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
+    updated = await db.scalar(
+        update(Run)
+        .where(
+            Run.id == run_id,
+            Run.status == "RUNNING",
+            Run.lease_owner == worker_id,
+            Run.lease_until > datetime.now(UTC),
+        )
+        .values(status="WAITING", waiting_at=datetime.now(UTC), lease_owner=None, lease_until=None)
+        .returning(Run.id)
+    )
+    await db.commit()
+    return updated is not None
 
 
 async def end_run(
@@ -172,7 +257,13 @@ async def end_run(
             Run.lease_owner == worker_id,
             Run.lease_until > datetime.now(UTC),
         )
-        .values(status=status, error_code=code, lease_owner=None, lease_until=None)
+        .values(
+            status=status,
+            error_code=code,
+            lease_owner=None,
+            lease_until=None,
+            completed_at=datetime.now(UTC),
+        )
         .returning(Run.id)
     )
     updated = await db.scalar(statement)
@@ -184,7 +275,7 @@ async def cancel_pending(db: AsyncSession, run_id: str) -> bool:
     statement = (
         update(Run)
         .where(Run.id == run_id, Run.status == "PENDING")
-        .values(status="CANCELLED")
+        .values(status="CANCELLED", completed_at=datetime.now(UTC))
         .returning(Run.id)
     )
     updated = await db.scalar(statement)

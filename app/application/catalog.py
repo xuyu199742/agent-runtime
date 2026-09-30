@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 
+from app.domain.agent import ToolDefinition as RuntimeToolDefinition
 from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.persistence.repositories.catalog import CatalogRepository
+from app.runtime.tools import build_tools
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,10 @@ class CatalogService:
             raise NotFound("Agent 不存在")
         return agent
 
+    async def agent_revisions(self, agent_id: str):
+        await self.get_agent(agent_id)
+        return await self.catalog.agent_revisions(agent_id)
+
     async def delete_agent(self, agent_id: str):
         await self.catalog.delete(await self.get_agent(agent_id))
 
@@ -125,6 +131,29 @@ class CatalogService:
             raise NotFound("工具不存在")
         return tool
 
+    async def test_tool(self, tool_id: str, args: dict):
+        tool = await self.get_tool(tool_id)
+        if not tool.enabled or tool.archived_at is not None:
+            raise Conflict("Tool 未启用")
+        if tool.effect_type != "READ_ONLY" or tool.policy.get("requires_approval"):
+            raise Conflict("此 Tool 不允许直接测试")
+        runtime_tool = build_tools(
+            [
+                RuntimeToolDefinition(
+                    name=tool.name,
+                    type=tool.type,
+                    description=tool.description,
+                    config=tool.config,
+                    policy=tool.policy,
+                )
+            ]
+        )[0]
+        try:
+            result = await runtime_tool.ainvoke(args)
+        except Exception:  # noqa: BLE001 - 不向管理界面泄漏底层异常或目标地址细节
+            return {"success": False, "code": "TOOL_ERROR", "message": "工具执行失败"}
+        return {"success": True, "result": str(result)}
+
     async def delete_tool(self, tool_id: str):
         await self.catalog.delete(await self.get_tool(tool_id))
 
@@ -149,6 +178,7 @@ def agent_out(agent) -> dict:
         "system_prompt",
         "model_id",
         "max_model_calls",
+        "revision",
         "enabled",
         "created_at",
         "updated_at",

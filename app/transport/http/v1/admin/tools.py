@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 
 from app.application.auth import Principal
 from app.transport.http.common import Audit, Catalog
@@ -11,6 +12,11 @@ from app.transport.schemas.legacy import ToolIn
 router = APIRouter(prefix="/api/v1/admin/tools", tags=["admin-tools"])
 Viewer = Annotated[Principal, Depends(require("tool:view"))]
 Editor = Annotated[Principal, Depends(require("tool:update"))]
+Tester = Annotated[Principal, Depends(require("tool:test"))]
+
+
+class ToolTestIn(BaseModel):
+    args: dict = Field(default_factory=dict)
 
 
 @router.get("")
@@ -72,3 +78,14 @@ async def disable(tool_id: str, user: Editor, catalog: Catalog, audit: Audit, re
 async def archive(tool_id: str, user: Editor, catalog: Catalog, audit: Audit, request: Request):
     await catalog.change_state("tool", tool_id, None)
     await record_action(audit, request, user, "tool:archive", "tool", tool_id)
+
+
+@router.post("/{tool_id}/test")
+async def test_tool(
+    tool_id: str, body: ToolTestIn, user: Tester, catalog: Catalog, audit: Audit, request: Request
+):
+    result = await catalog.test_tool(tool_id, body.args)
+    await record_action(
+        audit, request, user, "tool:test", "tool", tool_id, {"success": result["success"]}
+    )
+    return result

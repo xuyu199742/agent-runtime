@@ -17,6 +17,9 @@ def client_run(run, answer):
         answer=answer,
         error=run.error_code,
         created_at=run.created_at,
+        started_at=run.started_at,
+        waiting_at=run.waiting_at,
+        completed_at=run.completed_at,
     )
 
 

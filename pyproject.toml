@@ -1,6 +1,6 @@
 [project]
 name = "agent-server"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "基于 LangChain 和 LangGraph 的异步 Agent 服务端"
 requires-python = ">=3.12"
 dependencies = [

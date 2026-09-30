@@ -16,14 +16,17 @@ from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
     AgentDefinition,
+    ExecutionSpec,
     ModelConfig,
     Run,
     Session,
     session_factory,
 )
+from app.persistence.repositories.approvals import ApprovalRepository
 from app.persistence.repositories.conversations import ConversationRepository
-from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run
-from app.runtime.agent import LangChainAgentRuntime, RunCancelled
+from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run, wait_run
+from app.persistence.repositories.tool_executions import ToolExecutionStore
+from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
@@ -89,10 +92,22 @@ async def run_agent(
     async with session_factory() as db:
         run = await db.get(Run, run_id)
         session = await db.get(Session, run.session_id)
-        agent = await db.get(AgentDefinition, session.agent_id)
-        model_config = await db.get(ModelConfig, agent.model_id)
+        spec = await db.get(ExecutionSpec, run.execution_spec_id) if run.execution_spec_id else None
+        if run.execution_spec_id and spec is None:
+            raise ValueError("Run 配置快照不存在")
+        snapshot = spec.snapshot if spec else None
+        agent = await db.get(AgentDefinition, session.agent_id) if snapshot is None else None
+        model_config = await db.get(ModelConfig, agent.model_id) if agent is not None else None
+        context_policy = (
+            snapshot["context"]
+            if snapshot
+            else {
+                "max_messages": get_settings().context_max_messages,
+                "max_tokens": get_settings().context_max_tokens,
+            }
+        )
         history = await ConversationRepository(db).recent_messages(
-            session.id, run.created_at, get_settings().context_max_messages
+            session.id, run.created_at, context_policy["max_messages"]
         )
 
     structlog.contextvars.clear_contextvars()
@@ -108,36 +123,81 @@ async def run_agent(
 
     if not resumed:
         await safe_publish(events, run_id, "run.started", {})
+    model_data = (
+        snapshot["model"]
+        if snapshot
+        else {
+            "provider": model_config.provider,
+            "model_name": model_config.model_name,
+            "base_url": model_config.base_url,
+            "config": model_config.config,
+            "api_key_encrypted": model_config.api_key_encrypted,
+        }
+    )
+    tool_data = (
+        snapshot["tools"]
+        if snapshot
+        else [
+            {
+                "name": tool.name,
+                "type": tool.type,
+                "description": tool.description,
+                "config": tool.config,
+                "policy": tool.policy,
+                "effect_type": tool.effect_type,
+                "failure_policy": tool.failure_policy,
+            }
+            for tool in agent.tools
+        ]
+    )
     runtime = LangChainAgentRuntime(
         model=build_model(
             resolve_model_config(
                 ModelDefinition(
-                    provider=model_config.provider,
-                    model_name=model_config.model_name,
-                    base_url=model_config.base_url,
-                    config=model_config.config,
-                    enabled=model_config.enabled,
+                    provider=model_data["provider"],
+                    model_name=model_data["model_name"],
+                    base_url=model_data["base_url"],
+                    config=model_data["config"],
+                    enabled=True if snapshot else model_config.enabled,
                 ),
-                model_config.api_key_encrypted,
+                model_data["api_key_encrypted"],
             )
         ),
         tools=build_tools(
             [
                 ToolDefinition(
-                    name=tool.name,
-                    type=tool.type,
-                    description=tool.description,
-                    config=tool.config,
-                    policy=tool.policy,
-                    enabled=tool.enabled,
+                    name=tool["name"],
+                    type=tool["type"],
+                    description=tool["description"],
+                    config=tool["config"],
+                    policy=tool["policy"],
+                    enabled=True,
                 )
-                for tool in agent.tools
+                for tool in tool_data
             ]
         ),
-        system_prompt=agent.system_prompt,
-        max_model_calls=agent.max_model_calls,
+        system_prompt=snapshot["system_prompt"] if snapshot else agent.system_prompt,
+        max_model_calls=snapshot["max_model_calls"] if snapshot else agent.max_model_calls,
         checkpointer=saver,
+        tool_execution_store=ToolExecutionStore(session_factory),
+        run_id=run_id,
+        tool_policies={tool["name"]: tool for tool in tool_data},
+        approval_session_factory=session_factory,
     )
+
+    approval_decisions = None
+    if resumed:
+        state = await runtime.graph.aget_state({"configurable": {"thread_id": run_id}})
+        if state.interrupts:
+            decisions = {}
+            async with session_factory() as db:
+                approvals = ApprovalRepository(db)
+                for pending in state.interrupts:
+                    approval = await approvals.get(pending.value["approval_id"])
+                    if approval is not None and approval.status in {"APPROVED", "REJECTED"}:
+                        decisions[pending.id] = approval.status == "APPROVED"
+            if len(decisions) == len(state.interrupts):
+                approval_decisions = decisions
 
     async def emit(kind: str, data: dict) -> None:
         await safe_publish(events, run_id, kind, data)
@@ -152,14 +212,15 @@ async def run_agent(
         run_id,
         build_context(
             [ConversationTurn(role=item.role, content=item.content) for item in history],
-            max_messages=get_settings().context_max_messages,
-            max_tokens=get_settings().context_max_tokens,
+            max_messages=context_policy["max_messages"],
+            max_tokens=context_policy["max_tokens"],
         ),
         emit,
         should_cancel,
         session_id=session.id,
         user_id=session.user_id,
         resume=resumed,
+        approval_decisions=approval_decisions,
     )
 
 
@@ -177,6 +238,8 @@ async def execute_run(
             return "completed", await run_agent(run_id, resumed, redis, events, saver, worker_id)
         except RunCancelled:
             return "cancelled", None
+        except RunWaiting as waiting:
+            return "waiting", waiting
         except CoordinationLost:
             return "lease_lost", None
         except Exception as exc:  # noqa: BLE001 - Run 错误需要先转为业务终态
@@ -206,6 +269,14 @@ async def execute_run(
 
     if outcome == "lease_lost":
         return False  # Keep the Redis pending entry for XAUTOCLAIM.
+    if outcome == "waiting" and isinstance(value, RunWaiting):
+        async with session_factory() as db:
+            waiting = await wait_run(db, run_id, worker_id)
+        if waiting:
+            await safe_publish(events, run_id, "run.waiting", {})
+            for approval in value.approvals:
+                await safe_publish(events, run_id, "approval.required", approval)
+        return waiting
     if outcome == "completed":
         async with session_factory() as db:
             completed = await finish_run(db, run_id, worker_id, answer)
@@ -241,10 +312,12 @@ async def process_entry(
     run_id = fields["run_id"]
     async with session_factory() as db:
         run = await db.get(Run, run_id)
-        resumed = run is not None and run.status == "RUNNING"
+        resumed = run is not None and (
+            run.status == "RUNNING" or (run.status == "PENDING" and run.waiting_at is not None)
+        )
         claimed = run is not None and await claim_run(db, run_id, worker_id)
     if claimed:
         if await execute_run(run_id, worker_id, resumed, redis, events, saver):
-            await queue.ack(stream_id)
+            await queue.ack(stream_id, run_id)
     elif run is None or run.status in {"COMPLETED", "FAILED", "CANCELLED"}:
-        await queue.ack(stream_id)
+        await queue.ack(stream_id, run_id)

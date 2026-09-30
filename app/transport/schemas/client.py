@@ -39,6 +39,9 @@ class ClientRunOut(BaseModel):
     answer: str | None
     error: str | None
     created_at: datetime
+    started_at: datetime | None = None
+    waiting_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class Page(BaseModel):

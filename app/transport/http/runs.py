@@ -40,13 +40,21 @@ async def cancel_run_for_user(run_id: str, runs: Runs, request: Request, user_id
 async def dispatch_cancel(run_id: str, run, runs: Runs, request: Request) -> None:
     redis, owned = redis_for_request(request)
     try:
-        if run.status == "PENDING" and await runs.cancel_pending(run_id):
+        if (run.status == "PENDING" and await runs.cancel_pending(run_id)) or (
+            run.status == "WAITING" and await runs.cancel_waiting(run_id)
+        ):
             try:
                 await EventStore(redis).publish(run_id, "run.cancelled", {})
             except RedisError:
                 log.warning("取消事件投递失败，可从 Run 状态恢复", run_id=run_id)
             return
         status = await runs.status(run_id)
+        if status == "WAITING" and await runs.cancel_waiting(run_id):
+            try:
+                await EventStore(redis).publish(run_id, "run.cancelled", {})
+            except RedisError:
+                log.warning("取消事件投递失败，可从 Run 状态恢复", run_id=run_id)
+            return
         if status == "RUNNING":
             try:
                 await redis.set(f"run:{run_id}:cancel", "1", ex=3600)

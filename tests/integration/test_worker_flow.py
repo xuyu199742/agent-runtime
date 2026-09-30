@@ -6,13 +6,14 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.main import app
 from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
-from app.persistence.database import get_db
+from app.persistence.database import ToolExecution, get_db
 from app.worker import runner as worker
 
 
@@ -109,6 +110,16 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
             run = await client.get(f"/api/runs/{run_id}")
             assert run.json()["status"] == "COMPLETED", run.text
             assert run.json()["answer_message_id"]
+            async with factory() as db:
+                execution = await db.scalar(
+                    select(ToolExecution).where(
+                        ToolExecution.run_id == run_id,
+                        ToolExecution.tool_call_id == "call-e2e",
+                    )
+                )
+                assert execution.status == "COMPLETED"
+                assert execution.idempotency_key == f"{run_id}:call-e2e"
+                assert execution.attempt == 1
             events = await client.get(f"/api/runs/{run_id}/events")
             assert "event: tool.completed" in events.text
             assert "event: run.completed" in events.text
