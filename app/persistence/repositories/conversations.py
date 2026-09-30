@@ -4,7 +4,15 @@ from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.database import AgentDefinition, Message, ModelConfig, Run, Session, new_id
+from app.persistence.database import (
+    AgentDefinition,
+    Artifact,
+    Message,
+    ModelConfig,
+    Run,
+    Session,
+    new_id,
+)
 from app.persistence.execution_spec import freeze_execution_spec
 
 
@@ -68,10 +76,13 @@ class ConversationRepository:
         run_count = await self.db.scalar(
             select(func.count()).select_from(Run).where(Run.session_id == session_id)
         )
+        artifact_count = await self.db.scalar(
+            select(func.count()).select_from(Artifact).where(Artifact.conversation_id == session_id)
+        )
         return {
             "message_count": message_count or 0,
             "run_count": run_count or 0,
-            "artifact_count": 0,
+            "artifact_count": artifact_count or 0,
         }
 
     async def update_title(self, session: Session, title: str) -> Session:

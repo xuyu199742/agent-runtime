@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     context_max_tokens: int = Field(default=12000, ge=100, le=1000000)
     worker_concurrency: int = Field(default=10, ge=1, le=100)
     checkpoint_retention_hours: int = Field(default=24, ge=1, le=8760)
+    artifact_storage_dir: str = "./data/artifacts"
     log_level: str = "INFO"
 
     @property

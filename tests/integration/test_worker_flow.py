@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.main import app
 from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
-from app.persistence.database import ToolExecution, get_db
+from app.persistence.database import RunTraceEvent, ToolExecution, get_db
 from app.worker import runner as worker
 
 
@@ -120,6 +120,19 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
                 assert execution.status == "COMPLETED"
                 assert execution.idempotency_key == f"{run_id}:call-e2e"
                 assert execution.attempt == 1
+                trace = (
+                    await db.scalars(
+                        select(RunTraceEvent)
+                        .where(RunTraceEvent.run_id == run_id)
+                        .order_by(RunTraceEvent.id)
+                    )
+                ).all()
+                kinds = [item.event_type for item in trace]
+                assert "run.started" in kinds
+                assert "tool.completed" in kinds
+                assert "run.completed" in kinds
+                assert "model.delta" not in kinds
+                assert "答案是 4" not in str([item.data for item in trace])
             events = await client.get(f"/api/runs/{run_id}/events")
             assert "event: tool.completed" in events.text
             assert "event: run.completed" in events.text

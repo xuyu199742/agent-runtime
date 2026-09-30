@@ -40,6 +40,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
       REDIS_URL: redis://redis:6379/0
     ports: ["127.0.0.1:8000:8000"]
+    volumes: ["artifact_data:/app/data/artifacts"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -50,6 +51,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file: .env
+    volumes: ["artifact_data:/app/data/artifacts"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agent:agent@postgres:5432/agent
       REDIS_URL: redis://redis:6379/0
@@ -61,3 +63,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  artifact_data:

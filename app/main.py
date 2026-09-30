@@ -20,14 +20,18 @@ from app.transport.http.common import Db
 from app.transport.http.v1 import auth
 from app.transport.http.v1.admin import agents as admin_agents
 from app.transport.http.v1.admin import approvals as admin_approvals
+from app.transport.http.v1.admin import artifacts as admin_artifacts
 from app.transport.http.v1.admin import audit as admin_audit
 from app.transport.http.v1.admin import conversations as admin_conversations
+from app.transport.http.v1.admin import dashboard as admin_dashboard
 from app.transport.http.v1.admin import models as admin_models
 from app.transport.http.v1.admin import runs as admin_runs
 from app.transport.http.v1.admin import system as admin_system
 from app.transport.http.v1.admin import tools as admin_tools
+from app.transport.http.v1.admin import workers as admin_workers
 from app.transport.http.v1.client import agents as client_agents
 from app.transport.http.v1.client import approvals as client_approvals
+from app.transport.http.v1.client import artifacts as client_artifacts
 from app.transport.http.v1.client import conversations as client_conversations
 from app.transport.http.v1.client import runs as client_runs
 
@@ -138,14 +142,23 @@ async def ready(request: Request, db: Db):
 
 
 app.include_router(auth.router)
-for module in (client_agents, client_conversations, client_runs, client_approvals):
+for module in (
+    client_agents,
+    client_conversations,
+    client_runs,
+    client_approvals,
+    client_artifacts,
+):
     app.include_router(module.router)
 for module in (
     admin_agents,
     admin_approvals,
+    admin_artifacts,
     admin_models,
     admin_tools,
+    admin_workers,
     admin_conversations,
+    admin_dashboard,
     admin_runs,
     admin_audit,
     admin_system,

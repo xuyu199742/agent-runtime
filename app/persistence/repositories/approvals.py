@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.errors import Conflict, NotFound
 from app.persistence.database import Approval, Run
+from app.persistence.repositories.traces import trace_event
 
 
 class ApprovalRepository:
@@ -102,6 +103,7 @@ class ApprovalRepository:
             return False
         run.status = "CANCELLED"
         run.completed_at = datetime.now(UTC)
+        self.db.add(trace_event(run_id, "run.cancelled", {}))
         await self.db.execute(
             update(Approval)
             .where(Approval.run_id == run_id, Approval.status == "PENDING")
