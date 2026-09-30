@@ -45,6 +45,8 @@ class RunQueue:
         )
         return entries
 
-    async def ack(self, stream_id: str) -> None:
+    async def ack(self, stream_id: str, run_id: str | None = None) -> None:
         await self.redis.xack(self.stream, self.group, stream_id)
         await self.redis.xdel(self.stream, stream_id)
+        if run_id is not None:
+            await self.redis.delete(f"run:{run_id}:enqueued")

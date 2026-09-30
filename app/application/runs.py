@@ -78,6 +78,9 @@ class RunService:
     async def cancel_pending(self, run_id: str) -> bool:
         return await self.repository.cancel_pending(run_id)
 
+    async def cancel_waiting(self, run_id: str) -> bool:
+        return await self.repository.cancel_waiting(run_id)
+
     async def status(self, run_id: str) -> str | None:
         return await self.repository.status(run_id)
 

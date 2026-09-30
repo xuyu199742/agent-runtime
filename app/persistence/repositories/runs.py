@@ -13,6 +13,7 @@ from app.persistence.database import (
     ToolExecution,
     new_id,
 )
+from app.persistence.repositories.approvals import ApprovalRepository
 
 LEASE_SECONDS = 45
 
@@ -105,7 +106,7 @@ class RunRepository:
         if agent_id is not None:
             statement = statement.where(AgentDefinition.id == agent_id)
         if worker_id is not None:
-            statement = statement.where(Run.lease_owner == worker_id)
+            statement = statement.where(Run.worker_id == worker_id)
         if error_code is not None:
             statement = statement.where(Run.error_code == error_code)
         total = await self.db.scalar(select(func.count()).select_from(statement.subquery()))
@@ -131,6 +132,9 @@ class RunRepository:
     async def cancel_pending(self, run_id: str) -> bool:
         return await cancel_pending(self.db, run_id)
 
+    async def cancel_waiting(self, run_id: str) -> bool:
+        return await ApprovalRepository(self.db).cancel_waiting(run_id)
+
     async def status(self, run_id: str) -> str | None:
         await self.release_read()
         return await self.db.scalar(select(Run.status).where(Run.id == run_id))
@@ -153,6 +157,7 @@ async def claim_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
         .values(
             status="RUNNING",
             lease_owner=worker_id,
+            worker_id=worker_id,
             lease_until=now + timedelta(seconds=LEASE_SECONDS),
             started_at=func.coalesce(Run.started_at, now),
         )
@@ -221,6 +226,22 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
         return False
     await db.commit()
     return True
+
+
+async def wait_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
+    updated = await db.scalar(
+        update(Run)
+        .where(
+            Run.id == run_id,
+            Run.status == "RUNNING",
+            Run.lease_owner == worker_id,
+            Run.lease_until > datetime.now(UTC),
+        )
+        .values(status="WAITING", waiting_at=datetime.now(UTC), lease_owner=None, lease_until=None)
+        .returning(Run.id)
+    )
+    await db.commit()
+    return updated is not None
 
 
 async def end_run(

@@ -66,7 +66,12 @@ class ConversationService:
         await self.conversations.archive(session)
 
     async def submit_message(
-        self, session_id: str, user_id: str, client_message_id: str, content: str
+        self,
+        session_id: str,
+        user_id: str,
+        client_message_id: str,
+        content: str,
+        origin: str = "CLIENT",
     ) -> AcceptedMessage:
         conversations = self.conversations
         await self.get_session(session_id, user_id)
@@ -93,7 +98,7 @@ class ConversationService:
             raise Conflict("Session 中已有执行中的 Run")
 
         created = await conversations.create_submission(
-            session_id, user_id, client_message_id, content
+            session_id, user_id, client_message_id, content, origin
         )
         if created is None:
             existing = await previous()

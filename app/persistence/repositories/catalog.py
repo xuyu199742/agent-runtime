@@ -1,11 +1,12 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.model_secrets import encrypt_model_key
 from app.persistence.database import (
     AgentDefinition,
+    AgentRevision,
     AgentTool,
     ModelConfig,
     Run,
@@ -23,6 +24,17 @@ class CatalogRepository:
 
     async def agent(self, agent_id: str):
         return await self.db.get(AgentDefinition, agent_id)
+
+    async def agent_revisions(self, agent_id: str):
+        return list(
+            (
+                await self.db.scalars(
+                    select(AgentRevision)
+                    .where(AgentRevision.agent_id == agent_id)
+                    .order_by(AgentRevision.revision.desc())
+                )
+            ).all()
+        )
 
     async def tool(self, tool_id: str):
         return await self.db.get(ToolDefinition, tool_id)
@@ -126,6 +138,8 @@ class CatalogRepository:
         return tool
 
     async def delete(self, entity) -> None:
+        if isinstance(entity, AgentDefinition):
+            await self.db.execute(delete(AgentRevision).where(AgentRevision.agent_id == entity.id))
         await self.db.delete(entity)
         await self.db.commit()
 
@@ -134,7 +148,7 @@ class CatalogRepository:
             select(Run.id)
             .join(Session, Session.id == Run.session_id)
             .join(AgentDefinition, AgentDefinition.id == Session.agent_id)
-            .where(Run.status.in_(["PENDING", "RUNNING"]))
+            .where(Run.status.in_(["PENDING", "RUNNING", "WAITING"]))
         )
         if isinstance(entity, AgentDefinition):
             statement = statement.where(AgentDefinition.id == entity.id)
@@ -172,6 +186,27 @@ class CatalogRepository:
         if agent.id is not None:
             agent.revision += 1
         agent.tools = tools
+        await self.db.flush()
+        self.db.add(
+            AgentRevision(
+                agent_id=agent.id,
+                revision=agent.revision,
+                snapshot={
+                    **{
+                        field: getattr(agent, field)
+                        for field in (
+                            "name",
+                            "description",
+                            "system_prompt",
+                            "model_id",
+                            "max_model_calls",
+                            "enabled",
+                        )
+                    },
+                    "tool_ids": [tool.id for tool in tools],
+                },
+            )
+        )
         await self.db.commit()
         await self.db.refresh(agent)
         return agent

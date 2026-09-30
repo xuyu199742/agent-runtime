@@ -19,6 +19,7 @@ from app.transport.http import agents, models, runs, sessions, sse, tools
 from app.transport.http.common import Db
 from app.transport.http.v1 import auth
 from app.transport.http.v1.admin import agents as admin_agents
+from app.transport.http.v1.admin import approvals as admin_approvals
 from app.transport.http.v1.admin import audit as admin_audit
 from app.transport.http.v1.admin import conversations as admin_conversations
 from app.transport.http.v1.admin import models as admin_models
@@ -26,6 +27,7 @@ from app.transport.http.v1.admin import runs as admin_runs
 from app.transport.http.v1.admin import system as admin_system
 from app.transport.http.v1.admin import tools as admin_tools
 from app.transport.http.v1.client import agents as client_agents
+from app.transport.http.v1.client import approvals as client_approvals
 from app.transport.http.v1.client import conversations as client_conversations
 from app.transport.http.v1.client import runs as client_runs
 
@@ -45,7 +47,7 @@ async def lifespan(app: FastAPI):
         del app.state.redis
 
 
-app = FastAPI(title="Agent Runtime", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Agent Runtime", version="0.2.0.dev0", lifespan=lifespan)
 
 
 def error_response(
@@ -136,10 +138,11 @@ async def ready(request: Request, db: Db):
 
 
 app.include_router(auth.router)
-for module in (client_agents, client_conversations, client_runs):
+for module in (client_agents, client_conversations, client_runs, client_approvals):
     app.include_router(module.router)
 for module in (
     admin_agents,
+    admin_approvals,
     admin_models,
     admin_tools,
     admin_conversations,

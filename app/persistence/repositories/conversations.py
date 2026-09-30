@@ -121,14 +121,19 @@ class ConversationRepository:
         return (
             await self.db.scalar(
                 select(Run.id).where(
-                    Run.session_id == session_id, Run.status.in_(["PENDING", "RUNNING"])
+                    Run.session_id == session_id, Run.status.in_(["PENDING", "RUNNING", "WAITING"])
                 )
             )
             is not None
         )
 
     async def create_submission(
-        self, session_id: str, user_id: str, client_message_id: str, content: str
+        self,
+        session_id: str,
+        user_id: str,
+        client_message_id: str,
+        content: str,
+        origin: str = "CLIENT",
     ) -> tuple[str, str] | None:
         message = Message(
             id=new_id(),
@@ -147,6 +152,7 @@ class ConversationRepository:
             session_id=session_id,
             message_id=message.id,
             status="PENDING",
+            origin=origin,
             execution_spec_id=spec.id,
             runtime_version=spec.runtime_version,
         )

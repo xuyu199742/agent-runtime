@@ -57,10 +57,17 @@ class ToolIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_tool_options(self):
+        approval_keys = {"requires_approval", "approval_risk"}
+        if set(self.policy) - (approval_keys | {"allowed_hosts"}):
+            raise ValueError("Tool policy 包含不支持的配置")
+        if not isinstance(self.policy.get("requires_approval", False), bool):
+            raise ValueError("requires_approval 必须是布尔值")  # noqa: TRY004 - Pydantic 将其转为 422
+        if self.policy.get("approval_risk", "LOW") not in {"LOW", "MEDIUM", "HIGH"}:
+            raise ValueError("approval_risk 无效")
         if self.type == "NATIVE" and (
             self.name not in {"echo", "calculator"}
             or set(self.config) - {"timeout_seconds"}
-            or self.policy
+            or "allowed_hosts" in self.policy
         ):
             raise ValueError("不支持的 Native Tool 配置")
         if self.type == "HTTP":
@@ -69,8 +76,6 @@ class ToolIn(BaseModel):
                 "timeout_seconds",
             }:
                 raise ValueError("不支持的 HTTP Tool 配置")
-            if set(self.policy) - {"allowed_hosts"}:
-                raise ValueError("HTTP Tool policy 包含不支持的配置")
             hosts = self.policy.get("allowed_hosts", self.config.get("allowed_hosts", []))
             if (
                 not isinstance(hosts, list)

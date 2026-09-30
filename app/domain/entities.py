@@ -4,6 +4,7 @@ from enum import StrEnum
 class RunStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    WAITING = "WAITING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -12,10 +13,12 @@ class RunStatus(StrEnum):
 _ALLOWED = {
     RunStatus.PENDING: {RunStatus.RUNNING, RunStatus.CANCELLED},
     RunStatus.RUNNING: {
+        RunStatus.WAITING,
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
     },
+    RunStatus.WAITING: {RunStatus.PENDING, RunStatus.CANCELLED},
 }
 
 

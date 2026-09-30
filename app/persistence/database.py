@@ -199,6 +199,17 @@ class AgentDefinition(Base):
     tools: Mapped[list[ToolDefinition]] = relationship(secondary="agent_tools", lazy="selectin")
 
 
+class AgentRevision(Base):
+    __tablename__ = "agent_revisions"
+    __table_args__ = (UniqueConstraint("agent_id", "revision"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Session(Base):
     __tablename__ = "sessions"
 
@@ -242,6 +253,7 @@ class Run(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(100))
+    worker_id: Mapped[str | None] = mapped_column(String(100))
     checkpoint_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     execution_spec_id: Mapped[str | None] = mapped_column(ForeignKey("execution_specs.id"))
     runtime_version: Mapped[str | None] = mapped_column(String(20))
@@ -249,6 +261,7 @@ class Run(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     origin: Mapped[str] = mapped_column(String(20), default="CLIENT")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    waiting_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -285,6 +298,23 @@ class ToolExecution(Base):
     error_code: Mapped[str | None] = mapped_column(String(40))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Approval(Base):
+    __tablename__ = "approvals"
+    __table_args__ = (UniqueConstraint("run_id", "tool_call_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    tool_call_id: Mapped[str] = mapped_column(String(100))
+    tool_name: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text)
+    risk: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    decided_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)

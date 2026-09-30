@@ -1,5 +1,5 @@
 x-app-image: &app-image
-  image: agent-server:0.1
+  image: agent-server:0.2-dev
   build: .
 
 services:

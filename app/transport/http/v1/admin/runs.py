@@ -25,7 +25,7 @@ def detail_out(run, answer, context):
         "status": run.status,
         "user_id": user_id,
         "agent": {"id": agent_id, "name": agent_name},
-        "worker_id": run.lease_owner,
+        "worker_id": run.worker_id,
         "execution_spec_id": run.execution_spec_id,
         "runtime_version": run.runtime_version,
         "parent_run_id": run.parent_run_id,
