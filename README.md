@@ -6,6 +6,8 @@ V0.2 API 统一使用 `/api/v1`：认证在 `/auth`，用户对话在 `/client`�
 
 V0.2 的配置快照、ToolExecution、审批恢复和 Retry 语义见 [docs/v02-runtime-contract.md](docs/v02-runtime-contract.md)。
 
+管理后台位于 `web/admin`（本地端口 5173），用户对话客户端位于 [web/client](web/client/README.md)（本地端口 5174）。两个前端均通过 Vite 将 `/api` 转发到本地 API。分别在对应目录执行 `npm ci && npm run dev` 启动。
+
 独立的 Python Agent 服务端。业务配置在 PostgreSQL，异步 Run 和 SSE 实时事件由 Redis Streams 协调，Agent 执行使用 LangChain `create_agent` 与 LangGraph PostgreSQL checkpoint。
 
 ## 本地启动
