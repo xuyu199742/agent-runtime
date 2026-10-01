@@ -6,3 +6,5 @@ __pycache__/
 .ruff_cache/
 *.pyc
 *.egg-info/
+web/**/node_modules/
+web/**/dist/
