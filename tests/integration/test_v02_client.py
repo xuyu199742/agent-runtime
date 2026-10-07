@@ -138,7 +138,7 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 async def run(self, *_args, **_kwargs):
                     return "ok"
 
-            async def no_publish(*_args):
+            async def no_publish(*_args, **_kwargs):
                 return None
 
             monkeypatch.setattr(runner, "session_factory", factory)

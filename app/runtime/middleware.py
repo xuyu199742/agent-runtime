@@ -3,19 +3,45 @@ import json
 
 import structlog
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.config import get_config
+
+from app.context.errors import ContextLeaseLost
 
 log = structlog.get_logger()
 
 
 class TracingMiddleware(AgentMiddleware):
+    def __init__(self, model_call_journal=None):
+        self.model_call_journal = model_call_journal
+
     async def awrap_model_call(self, request, handler):
         log.info("模型调用开始")
+        execution_id = None
+        if self.model_call_journal is not None:
+            metadata = get_config().get("metadata") or {}
+            graph_step = metadata.get("langgraph_step")
+            if graph_step is None:
+                raise RuntimeError("LangGraph Model Step 标识缺失")
+            step_id = f"{self.model_call_journal.run_id}:model:{graph_step}"
+            messages = (
+                [request.system_message] if request.system_message is not None else []
+            ) + list(request.messages)
+            execution_id = await self.model_call_journal.start(step_id, "AGENT", messages)
         try:
             response = await handler(request)
         except Exception as exc:
             log.error("模型调用失败", error_type=type(exc).__name__)
+            if execution_id is not None:
+                await self.model_call_journal.fail(execution_id)
             raise
+        if execution_id is not None:
+            output = next(
+                (item for item in reversed(response.result) if isinstance(item, AIMessage)), None
+            )
+            if output is None:
+                raise RuntimeError("模型调用没有返回 AIMessage")
+            await self.model_call_journal.complete(execution_id, output)
         log.info("模型调用结束")
         return response
 
@@ -67,6 +93,8 @@ class ToolErrorMiddleware(AgentMiddleware):
                         None,
                     )
                 return result
+            except ContextLeaseLost:
+                raise
             except Exception as exc:
                 log.warning("工具调用失败", error_type=type(exc).__name__)
                 if self.store is not None:

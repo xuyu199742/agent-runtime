@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -14,12 +15,14 @@ from app.persistence.database import (
     ConversationSummary,
     Message,
     ModelConfig,
+    ModelExecution,
     Run,
     RunContextSnapshot,
     RunTraceEvent,
     Session,
 )
 from app.worker.context_planning import prepare_v2_messages
+from app.worker.model_recording import ModelCallJournal
 from app.worker.runner import classify_run_error
 
 
@@ -218,6 +221,42 @@ async def test_lease_loss_does_not_write_snapshot_and_checkpoint_skips_planning(
         await engine.dispose()
 
 
+async def test_summary_attempt_before_snapshot_does_not_block_replanning():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        run_id, config = await _seed_run(factory, uuid4().hex[:8], lease_owner="worker-a")
+        journal = ModelCallJournal(factory, run_id, "worker-a", "openai", "fake")
+        execution_id = await journal.start(
+            f"{run_id}:summary:1", "CONTEXT_SUMMARY", [HumanMessage(content="待摘要历史")]
+        )
+        await journal.complete(execution_id, AIMessage(content="历史摘要"))
+        async with factory() as db:
+            execution = await db.get(ModelExecution, execution_id)
+            assert execution.phase == "CONTEXT_SUMMARY"
+            assert execution.status == "COMPLETED"
+            assert execution.output_message["content"] == "历史摘要"
+            kinds = list(
+                await db.scalars(
+                    select(RunTraceEvent.event_type)
+                    .where(RunTraceEvent.run_id == run_id)
+                    .order_by(RunTraceEvent.sequence)
+                )
+            )
+            assert kinds == ["context_summary.started", "context_summary.completed"]
+
+        async def summarize(_prompt: str) -> str:
+            return "历史摘要"
+
+        messages, resumed = await prepare_v2_messages(
+            run_id, "worker-a", config, None, summarize, factory
+        )
+        assert resumed is False
+        assert any(message.content == "当前" for message in messages)
+    finally:
+        await engine.dispose()
+
+
 async def test_changed_message_content_does_not_match_snapshot_hash():
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -249,7 +288,7 @@ async def test_started_run_without_snapshot_or_checkpoint_is_missing():
     try:
         run_id, config = await _seed_run(factory, suffix, lease_owner="worker-a")
         async with factory() as db:
-            db.add(RunTraceEvent(run_id=run_id, event_type="model.started", data={}))
+            db.add(RunTraceEvent(run_id=run_id, sequence=1, event_type="model.started", data={}))
             await db.commit()
         with pytest.raises(RunContextMissing) as caught:
             await prepare_v2_messages(run_id, "worker-a", config, None, _no_summary, factory)

@@ -29,12 +29,13 @@ from app.persistence.repositories.approvals import ApprovalRepository
 from app.persistence.repositories.conversations import ConversationRepository
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run, wait_run
 from app.persistence.repositories.tool_executions import ToolExecutionStore
-from app.persistence.repositories.traces import TRACE_TYPES, TraceRepository
+from app.persistence.repositories.traces import TRACE_TYPES, ExecutionRecorder
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
 from app.worker.context_planning import prepare_v2_messages
+from app.worker.model_recording import ModelCallJournal
 
 log = structlog.get_logger()
 
@@ -59,10 +60,29 @@ def classify_run_error(exc: Exception) -> str:
     return "INTERNAL_ERROR"
 
 
-async def safe_publish(events: EventStore, run_id: str, kind: str, data: dict) -> None:
-    if kind in TRACE_TYPES - {"run.completed", "run.failed", "run.cancelled", "run.waiting"}:
+async def safe_publish(
+    events: EventStore,
+    run_id: str,
+    kind: str,
+    data: dict,
+    *,
+    worker_id: str | None = None,
+    record: bool = True,
+) -> None:
+    if record and kind in TRACE_TYPES - {
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "run.waiting",
+    }:
         async with session_factory() as db:
-            await TraceRepository(db).record(run_id, kind, data)
+            if (
+                worker_id is None
+                or await ExecutionRecorder(db).append(run_id, kind, data, worker_id=worker_id)
+                is None
+            ):
+                raise ContextLeaseLost
+            await db.commit()
     try:
         await events.publish(run_id, kind, data)
     except RedisError:
@@ -142,9 +162,33 @@ async def run_agent(
         )
     )
 
+    journal = (
+        ModelCallJournal(session_factory, run_id, worker_id, config.provider, config.model_name)
+        if worker_id is not None
+        else None
+    )
+    summary_call_number = 0
+
     async def summarize(prompt: str) -> str:
         # 摘要是上下文基础设施，不进入 Agent，也不消耗 max_model_calls。
-        response = await chat_model.ainvoke([HumanMessage(content=prompt)])
+        nonlocal summary_call_number
+        summary_call_number += 1
+        message = HumanMessage(content=prompt)
+        execution_id = (
+            await journal.start(
+                f"{run_id}:summary:{summary_call_number}", "CONTEXT_SUMMARY", [message]
+            )
+            if journal is not None
+            else None
+        )
+        try:
+            response = await chat_model.ainvoke([message])
+        except Exception:
+            if execution_id is not None:
+                await journal.fail(execution_id)
+            raise
+        if execution_id is not None:
+            await journal.complete(execution_id, response)
         content = response.content
         if isinstance(content, list):
             return "".join(
@@ -163,17 +207,21 @@ async def run_agent(
             max_messages=config.v1_max_messages or get_settings().context_max_messages,
             max_tokens=config.v1_max_tokens or get_settings().context_max_tokens,
         )
-    await safe_publish(events, run_id, "run.resumed" if resumed else "run.started", {})
+    await safe_publish(
+        events, run_id, "run.resumed" if resumed else "run.started", {}, worker_id=worker_id
+    )
     runtime = LangChainAgentRuntime(
         model=chat_model,
         tools=build_tools(config.tool_definitions()),
         system_prompt=config.system_prompt,
         max_model_calls=config.max_model_calls,
         checkpointer=saver,
-        tool_execution_store=ToolExecutionStore(session_factory),
+        tool_execution_store=ToolExecutionStore(session_factory, worker_id),
         run_id=run_id,
         tool_policies={tool["name"]: tool for tool in config.tools},
         approval_session_factory=session_factory,
+        model_call_journal=journal,
+        worker_id=worker_id,
     )
 
     approval_decisions = None
@@ -191,7 +239,21 @@ async def run_agent(
                 approval_decisions = decisions
 
     async def emit(kind: str, data: dict) -> None:
-        await safe_publish(events, run_id, kind, data)
+        await safe_publish(
+            events,
+            run_id,
+            kind,
+            data,
+            worker_id=worker_id,
+            record=kind
+            not in {
+                "model.started",
+                "model.completed",
+                "tool.started",
+                "tool.completed",
+                "tool.failed",
+            },
+        )
 
     async def should_cancel() -> bool:
         try:
@@ -262,7 +324,7 @@ async def execute_run(
         if waiting:
             await safe_publish(events, run_id, "run.waiting", {})
             for approval in value.approvals:
-                await safe_publish(events, run_id, "approval.required", approval)
+                await safe_publish(events, run_id, "approval.required", approval, record=False)
         return waiting
     if outcome == "completed":
         async with session_factory() as db:
