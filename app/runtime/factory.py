@@ -29,6 +29,7 @@ def build_model(runtime_config: ModelRuntimeConfig) -> ChatOpenAI:
     if not api_key and config.provider == "openai":
         raise ValueError("模型尚未配置凭证")
     options = config.config or {}
+    max_output_tokens = options.get("max_output_tokens")
     return ChatOpenAI(
         model=config.model_name,
         base_url=config.base_url if config.provider == "openai-compatible" else None,
@@ -36,4 +37,9 @@ def build_model(runtime_config: ModelRuntimeConfig) -> ChatOpenAI:
         timeout=options.get("timeout_seconds", 60),
         max_retries=options.get("max_retries", 1),
         temperature=options.get("temperature"),
+        max_tokens=max_output_tokens if _positive_int(max_output_tokens) else None,
     )
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0

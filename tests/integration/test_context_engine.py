@@ -218,6 +218,30 @@ async def test_lease_loss_does_not_write_snapshot_and_checkpoint_skips_planning(
         await engine.dispose()
 
 
+async def test_changed_message_content_does_not_match_snapshot_hash():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex[:8]
+
+    async def summarize(_prompt: str) -> str:
+        return "短摘要"
+
+    try:
+        run_id, config = await _seed_run(factory, suffix, lease_owner="worker-a")
+        await prepare_v2_messages(run_id, "worker-a", config, None, summarize, factory)
+        async with factory() as db:
+            snapshot = await db.scalar(
+                select(RunContextSnapshot).where(RunContextSnapshot.run_id == run_id)
+            )
+            message = await db.get(Message, snapshot.message_ids[-1])
+            message.content = "正文被改掉"
+            await db.commit()
+        with pytest.raises(RunContextMissing):
+            await prepare_v2_messages(run_id, "worker-a", config, None, summarize, factory)
+    finally:
+        await engine.dispose()
+
+
 async def test_started_run_without_snapshot_or_checkpoint_is_missing():
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)

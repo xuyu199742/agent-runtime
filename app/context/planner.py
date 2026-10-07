@@ -201,23 +201,60 @@ async def plan_initial_context(
                 raise ContextBudgetExceeded("对话上下文超过预算，压缩后仍无法放入模型")
             return _planned(original, summary, _Ready(decision.raw, decision.estimated_tokens))
         rounds += 1
+        summary = await _summarize_batch(
+            summary, decision.batch, summarize, budget.summary_input_budget
+        )
+
+
+def _chunk_for_summary(
+    previous: str | None, messages: list[ContextMessage], limit: int
+) -> list[ContextMessage]:
+    """取最长的前缀，使摘要提示词不超过摘要模型的输入预算。"""
+    chosen: list[ContextMessage] = []
+    for message in messages:
+        prompt = summarizer_prompt(previous, chosen + [message])
+        if approximate_tokens(prompt) > limit:
+            break
+        chosen.append(message)
+    return chosen
+
+
+async def _summarize_batch(
+    summary: SummaryView | None,
+    batch: list[ContextMessage],
+    summarize: SummaryModel,
+    summary_input_budget: int,
+) -> SummaryView:
+    """一次压缩内按摘要模型的输入预算分批调用，只产生一份新摘要。"""
+    if summary_input_budget <= 0:
+        raise ContextBudgetExceeded("摘要模型没有可用的输入预算")
+    previous = summary.text if summary is not None else None
+    remaining = list(batch)
+    text = ""
+    last_prompt = ""
+    while remaining:
+        chunk = _chunk_for_summary(previous, remaining, summary_input_budget)
+        if not chunk:
+            raise ContextBudgetExceeded("待压缩的历史超过摘要模型的输入预算，无法继续分批")
+        last_prompt = summarizer_prompt(previous, chunk)
         try:
-            text = str(await summarize(decision.prompt)).strip()
+            text = str(await summarize(last_prompt)).strip()
         except ContextSummaryFailed:
             raise
         except Exception as exc:
             raise ContextSummaryFailed("上下文摘要失败") from exc
         if not text:
             raise ContextSummaryFailed("上下文摘要失败")
-        batch = decision.batch
-        summary = SummaryView(
-            id=None,
-            revision=(summary.revision + 1) if summary is not None else 1,
-            text=text,
-            token_estimate=summary_token_estimate(text),
-            from_message_id=summary.from_message_id if summary is not None else batch[0].id,
-            through_message_id=batch[-1].id,
-            through_created_at=batch[-1].created_at,
-            source_message_count=(summary.source_message_count if summary else 0) + len(batch),
-            prompt_hash=summary_prompt_hash(decision.prompt),
-        )
+        previous = text
+        remaining = remaining[len(chunk) :]
+    return SummaryView(
+        id=None,
+        revision=(summary.revision + 1) if summary is not None else 1,
+        text=text,
+        token_estimate=summary_token_estimate(text),
+        from_message_id=summary.from_message_id if summary is not None else batch[0].id,
+        through_message_id=batch[-1].id,
+        through_created_at=batch[-1].created_at,
+        source_message_count=(summary.source_message_count if summary else 0) + len(batch),
+        prompt_hash=summary_prompt_hash(last_prompt),
+    )

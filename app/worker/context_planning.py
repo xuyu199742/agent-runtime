@@ -62,6 +62,13 @@ async def _plan_and_store(
         messages = await messages_for_planning(db, run.session_id, current, summary_row)
     numbers = config.context_budget or {}
     policy = config.context_policy or {}
+    summary_input_budget = numbers.get("summary_input_budget")
+    if summary_input_budget is None:
+        summary_input_budget = (
+            int(numbers["context_window"])
+            - int(numbers["max_output_tokens"])
+            - int(numbers["safety_margin"])
+        )
     planned = await plan_initial_context(
         summary=summary,
         messages=messages,
@@ -71,6 +78,7 @@ async def _plan_and_store(
             soft_limit=numbers["soft_limit"],
             hard_limit=numbers["hard_limit"],
             max_compaction_rounds=policy["max_compaction_rounds"],
+            summary_input_budget=int(summary_input_budget),
         ),
         summarize=summarize,
     )

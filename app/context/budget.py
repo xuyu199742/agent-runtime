@@ -10,6 +10,7 @@ class ContextBudget:
     soft_limit: int
     hard_limit: int
     max_compaction_rounds: int
+    summary_input_budget: int
 
 
 def read_model_context(config: dict | None) -> tuple[int, int]:
@@ -48,6 +49,7 @@ def build_context_budget(
     conversation_input_budget = (
         context_window - max_output_tokens - prompt_tokens - tool_schema_tokens - safety_margin
     )
+    summary_input_budget = context_window - max_output_tokens - safety_margin
     policy = {
         "context_window": context_window,
         "max_output_tokens": max_output_tokens,
@@ -64,6 +66,7 @@ def build_context_budget(
         "tool_schema_tokens": tool_schema_tokens,
         "safety_margin": safety_margin,
         "conversation_input_budget": conversation_input_budget,
+        "summary_input_budget": summary_input_budget,
         "soft_limit": int(conversation_input_budget * soft_limit_ratio),
         "hard_limit": int(conversation_input_budget * hard_limit_ratio),
     }
@@ -72,5 +75,6 @@ def build_context_budget(
         soft_limit=numbers["soft_limit"],
         hard_limit=numbers["hard_limit"],
         max_compaction_rounds=max_compaction_rounds,
+        summary_input_budget=summary_input_budget,
     )
     return policy, numbers, budget

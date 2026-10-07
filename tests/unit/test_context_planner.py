@@ -10,13 +10,16 @@ from app.context.errors import (
     ContextInputTooLarge,
     ContextSummaryFailed,
 )
+from app.context.model_limits import fill_known_model_context
 from app.context.planner import (
     ContextMessage,
     SummaryView,
     decide_context_action,
     plan_initial_context,
 )
-from app.context.snapshot import render_context
+from app.context.snapshot import context_content_hash, render_context
+from app.context.summary import summarizer_prompt
+from app.context.tokens import approximate_tokens
 from app.domain.agent import ToolDefinition
 from app.domain.errors import ModelContextConfigMissing
 from app.execution.config import redact_execution_snapshot, resolve_execution_config
@@ -39,6 +42,7 @@ def _budget(**overrides) -> ContextBudget:
         "soft_limit": 750,
         "hard_limit": 900,
         "max_compaction_rounds": 2,
+        "summary_input_budget": 100_000,
     }
     values.update(overrides)
     return ContextBudget(**values)
@@ -267,6 +271,88 @@ def test_context_errors_map_to_stable_codes():
     assert classify_run_error(ContextInputTooLarge()) == "CONTEXT_INPUT_TOO_LARGE"
     assert classify_run_error(ContextBudgetExceeded()) == "CONTEXT_BUDGET_EXCEEDED"
     assert classify_run_error(ContextSummaryFailed()) == "CONTEXT_SUMMARY_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_long_history_is_summarized_within_summary_budget():
+    prompts: list[str] = []
+
+    async def summarize(prompt: str) -> str:
+        prompts.append(prompt)
+        assert approximate_tokens(prompt) <= 500
+        return "短摘要"
+
+    history = [_message(index, "历史" * 40) for index in range(40)]
+    planned = await plan_initial_context(
+        summary=None,
+        messages=[*history, _message(40, "当前问题")],
+        current_message_id="m0040",
+        budget=_budget(
+            conversation_input_budget=20_000,
+            soft_limit=50,
+            hard_limit=800,
+            summary_input_budget=500,
+        ),
+        summarize=summarize,
+    )
+    assert len(prompts) >= 2
+    assert approximate_tokens(summarizer_prompt(None, history)) > 500
+    assert planned.summary_insert is not None
+    assert planned.summary_insert.through_message_id == "m0039"
+    assert planned.summary_insert.source_message_count == 40
+    assert planned.message_ids == ["m0040"]
+
+
+@pytest.mark.asyncio
+async def test_one_history_message_larger_than_summary_budget_fails():
+    async def summarize(_prompt: str) -> str:
+        raise AssertionError("单条历史放不进摘要预算时不应调用模型")
+
+    with pytest.raises(ContextBudgetExceeded):
+        await plan_initial_context(
+            summary=None,
+            messages=[_message(1, "历史" * 400), _message(2, "当前")],
+            current_message_id="m0002",
+            budget=_budget(
+                conversation_input_budget=20_000,
+                soft_limit=50,
+                hard_limit=100,
+                summary_input_budget=100,
+            ),
+            summarize=summarize,
+        )
+
+
+def test_snapshot_hash_covers_summary_and_message_text():
+    budget = {"conversation_input_budget": 10}
+    original = context_content_hash("summary-1", "摘要", [_message(1, "原文")], budget)
+    assert original == context_content_hash("summary-1", "摘要", [_message(1, "原文")], budget)
+    assert original != context_content_hash("summary-1", "摘要", [_message(1, "被改过")], budget)
+    assert original != context_content_hash(
+        "summary-1", "另一份摘要", [_message(1, "原文")], budget
+    )
+
+
+def test_known_model_context_is_filled_per_model():
+    filled = fill_known_model_context({"timeout_seconds": 60, "max_retries": 1}, "deepseek-flash")
+    assert filled == {
+        "timeout_seconds": 60,
+        "max_retries": 1,
+        "context_window": 1_048_576,
+        "max_output_tokens": 393_216,
+    }
+    assert fill_known_model_context({}, "bonsai2") is None
+    assert fill_known_model_context({}, "fake") is None
+    assert (
+        fill_known_model_context(
+            {"context_window": 1_048_576, "max_output_tokens": 393_216}, "deepseek-flash"
+        )
+        is None
+    )
+    assert fill_known_model_context({"context_window": 8192}, "deepseek-flash") is None
+    partial = fill_known_model_context({"max_output_tokens": 4096}, "deepseek-v4-pro")
+    assert partial["context_window"] == 1_048_576
+    assert partial["max_output_tokens"] == 4096
 
 
 async def _unused_summary(_prompt: str) -> str:

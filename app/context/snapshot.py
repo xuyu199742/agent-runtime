@@ -4,8 +4,22 @@ from hashlib import sha256
 from app.context.planner import ContextMessage
 
 
-def context_content_hash(summary_id: str | None, message_ids: list[str], budget: dict) -> str:
-    payload = {"budget": budget, "message_ids": message_ids, "summary_id": summary_id}
+def context_content_hash(
+    summary_id: str | None,
+    summary_text: str | None,
+    messages: list[ContextMessage],
+    budget: dict,
+) -> str:
+    """哈希覆盖摘要正文和原始消息正文，恢复时可以核对文本没有变化。"""
+    payload = {
+        "budget": budget,
+        "messages": [
+            {"content": message.content, "id": message.id, "role": message.role}
+            for message in messages
+        ],
+        "summary_id": summary_id,
+        "summary_text": summary_text or "",
+    }
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return sha256(canonical.encode()).hexdigest()
 

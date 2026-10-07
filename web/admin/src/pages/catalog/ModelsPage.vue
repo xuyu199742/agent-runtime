@@ -38,7 +38,15 @@ const auth = useAuthStore(),
 const show = ref(false),
   saving = ref(false),
   testing = ref(false),
-  currentId = ref<string | null>(null);
+  currentId = ref<string | null>(null),
+  contextTouched = ref(false);
+// 与 app/context/model_limits.py 的已公布上限保持一致。只在字段仍为空时填入。
+const publishedContext: Record<string, [number, number]> = {
+  "deepseek-flash": [1048576, 393216],
+  "deepseek-v4-flash": [1048576, 393216],
+  "deepseek-v4-flash-vision-exp": [1048576, 393216],
+  "deepseek-v4-pro": [1048576, 393216],
+};
 const form = ref({
   name: "",
   provider: "openai-compatible",
@@ -48,12 +56,21 @@ const form = ref({
   timeout_seconds: 60,
   max_retries: 1,
   temperature: 0.7,
-  context_window: 32768,
-  max_output_tokens: 4096,
+  context_window: null as number | null,
+  max_output_tokens: null as number | null,
   enabled: true,
 });
+function suggestPublishedContext(modelName = form.value.model_name) {
+  if (contextTouched.value) return;
+  const published = publishedContext[modelName.trim()];
+  form.value.context_window = published?.[0] ?? null;
+  form.value.max_output_tokens = published?.[1] ?? null;
+}
 function open(row?: Model) {
   currentId.value = row?.id || null;
+  const storedWindow = row?.config?.context_window ?? null;
+  const storedOutput = row?.config?.max_output_tokens ?? null;
+  contextTouched.value = storedWindow != null || storedOutput != null;
   form.value = {
     name: row?.name || "",
     provider: row?.provider || "openai-compatible",
@@ -63,10 +80,11 @@ function open(row?: Model) {
     timeout_seconds: row?.config?.timeout_seconds ?? 60,
     max_retries: row?.config?.max_retries ?? 1,
     temperature: row?.config?.temperature ?? 0.7,
-    context_window: row?.config?.context_window ?? 32768,
-    max_output_tokens: row?.config?.max_output_tokens ?? 4096,
+    context_window: storedWindow,
+    max_output_tokens: storedOutput,
     enabled: row?.enabled ?? true,
   };
+  suggestPublishedContext(form.value.model_name);
   show.value = true;
 }
 function body() {
@@ -87,6 +105,14 @@ function body() {
   };
 }
 async function save() {
+  const window = form.value.context_window;
+  const output = form.value.max_output_tokens;
+  if (window == null || output == null || output >= window) {
+    message.error(
+      "请填写该模型公布的上下文窗口和最大输出，且最大输出要小于窗口",
+    );
+    return;
+  }
   saving.value = true;
   try {
     if (currentId.value)
@@ -268,8 +294,9 @@ const columns: DataTableColumns<RecordData> = [
         ><n-form-item label="Model Name"
           ><n-input
             v-model:value="form.model_name"
-            placeholder="模型标识"
-            :input-props="{ autocomplete: 'off' }" /></n-form-item
+            placeholder="模型标识，例如 deepseek-flash"
+            :input-props="{ autocomplete: 'off' }"
+            @update:value="suggestPublishedContext" /></n-form-item
         ><n-form-item label="Base URL"
           ><n-input
             v-model:value="form.base_url"
@@ -304,11 +331,15 @@ const columns: DataTableColumns<RecordData> = [
           <n-form-item label="上下文窗口"
             ><n-input-number
               v-model:value="form.context_window"
-              :min="1" /></n-form-item
-          ><n-form-item label="输出预留"
+              :min="1"
+              placeholder="该模型公布的窗口"
+              @focus="contextTouched = true" /></n-form-item
+          ><n-form-item label="最大输出"
             ><n-input-number
               v-model:value="form.max_output_tokens"
               :min="1"
+              placeholder="该模型公布的最大输出"
+              @focus="contextTouched = true"
           /></n-form-item>
         </div>
         <n-form-item label="启用"

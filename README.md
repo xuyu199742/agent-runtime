@@ -1,10 +1,11 @@
-# Agent Runtime V0.2（开发中）
+# Agent Runtime V0.3 Phase 1（开发中）
 
 V0.2 API 统一使用 `/api/v1`：认证在 `/auth`，用户对话在 `/client`，管理配置在 `/admin`。先运行 `uv run alembic upgrade head`，再运行 `uv run python -m scripts.bootstrap_admin --username admin --display-name 管理员` 创建首个管理员，命令会交互式读取密码。登录取得访问 token 后在请求中传入 `Authorization: Bearer <token>`。访问 token 失效后通过 `/api/v1/auth/refresh` 更新；退出时调用 `/api/v1/auth/logout`。本地接口文档位于 `/docs`。
 
 旧 `/api/*` 默认关闭；仅迁移期可设置 `LEGACY_API_ENABLED=true`。旧接口使用固定开发用户身份，不得对外开放。V0.2 分阶段实施计划见 [docs/v02-implementation-plan.md](docs/v02-implementation-plan.md)。以下 V0.1 说明仅用于旧接口迁移参考。
 
 V0.2 的配置快照、ToolExecution、审批恢复和 Retry 语义见 [docs/v02-runtime-contract.md](docs/v02-runtime-contract.md)。
+V0.3 Phase 1 的上下文规划、摘要与恢复边界见 [docs/v03-context-planning.md](docs/v03-context-planning.md)。
 
 管理后台位于 `web/admin`（本地端口 5173），用户对话客户端位于 [web/client](web/client/README.md)（本地端口 5174）。两个前端均通过 Vite 将 `/api` 转发到本地 API。分别在对应目录执行 `npm ci && npm run dev` 启动。
 
@@ -23,7 +24,7 @@ curl http://localhost:8000/ready
 接口文档：`http://localhost:8000/docs`。`/health` 只检查 API 进程；`/ready` 检查 PostgreSQL 与 Redis。API 与 Worker 共用一个 Dockerfile，使用不同启动命令。PostgreSQL 和 Redis 数据分别保存在 Docker volume 中。
 
 模型名称、端点和模型 API Key 均通过 `/api/models` 写入 PostgreSQL。API Key 在数据库中加密存储，读取接口只返回 `has_api_key`，更新时省略 `api_key` 会保留原值。`MODEL_SECRET_KEY` 是服务加解密主密钥，必须由 API 和 Worker 共用并妥善备份；丢失后已有模型 API Key 无法解密。已有 V0.1 数据库升级后，原来引用环境变量的模型需要通过模型更新接口重新写入 API Key；旧请求字段 `api_key_env` 已移除。使用 OpenAI-compatible 本地服务时，可通过 `base_url` 指向兼容接口，未设置密钥时使用占位值。HTTP Tool 默认关闭，只有服务端 `HTTP_TOOL_ALLOWED_HOSTS` 与 Tool 配置中的 `allowed_hosts` 同时包含目标域名时才启用，并只执行 HTTPS GET。
-模型上下文默认最多取最近 30 条消息和约 12000 个 token（保守估算），分别通过 `CONTEXT_MAX_MESSAGES`、`CONTEXT_MAX_TOKENS` 调整；超长的最新消息会截断。完整历史仍保留在 PostgreSQL。
+新 Run 创建时要求模型配置包含 `context_window` 和 `max_output_tokens`；两者用于冻结本轮上下文预算，输出上限也传给模型。Worker 在首次模型调用前按预算选择历史消息，必要时分批生成 ConversationSummary，随后持久化 RunContextSnapshot；恢复时只读取快照并核对内容哈希。旧 ExecutionSpec V1 继续使用原有的消息数量和 token 限额，不迁移其执行语义。未知模型的上下文上限需要管理员按供应商资料填写。
 
 Agent 配置字段 `max_model_calls` 限制单次 Run 的模型调用次数，由 LangChain `ModelCallLimitMiddleware` 执行；旧字段 `max_steps` 已移除。Tool 的 `description` 直接决定模型可见说明，`config.timeout_seconds` 控制超时；HTTP Tool 的 `policy.allowed_hosts` 与服务端 `HTTP_TOOL_ALLOWED_HOSTS` 取交集。
 

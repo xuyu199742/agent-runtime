@@ -93,12 +93,18 @@ async def load_snapshot_messages(
         summary_text = summary.summary
     ids = list(snapshot.message_ids)
     if not ids:
-        return summary_text, []
-    rows = list(await db.scalars(select(Message).where(Message.id.in_(ids))))
-    if len(rows) != len(ids):
-        raise ValueError("快照引用的消息不存在")
-    rows.sort(key=lambda item: (item.created_at, item.id))
-    return summary_text, [_message(row) for row in rows]
+        messages: list[ContextMessage] = []
+    else:
+        rows = {row.id: row for row in await db.scalars(select(Message).where(Message.id.in_(ids)))}
+        if len(rows) != len(ids):
+            raise ValueError("快照引用的消息不存在")
+        messages = [_message(rows[message_id]) for message_id in ids]
+    digest = context_content_hash(
+        snapshot.summary_id, summary_text, messages, dict(snapshot.budget or {})
+    )
+    if digest != snapshot.content_hash:
+        raise ValueError("上下文快照内容与首次执行不一致")
+    return summary_text, messages
 
 
 async def commit_planned_context(
@@ -155,6 +161,14 @@ async def commit_planned_context(
             await db.flush()
             summary_id = inserted.id
         budget = {**context_budget, "estimated_tokens": planned.estimated_tokens}
+        found = {
+            row.id: row
+            for row in await db.scalars(select(Message).where(Message.id.in_(planned.message_ids)))
+        }
+        if len(found) != len(planned.message_ids):
+            await db.rollback()
+            raise ContextCommitLost
+        messages = [_message(found[message_id]) for message_id in planned.message_ids]
         db.add(
             RunContextSnapshot(
                 id=new_id(),
@@ -163,7 +177,9 @@ async def commit_planned_context(
                 message_ids=list(planned.message_ids),
                 estimated_tokens=planned.estimated_tokens,
                 budget=budget,
-                content_hash=context_content_hash(summary_id, list(planned.message_ids), budget),
+                content_hash=context_content_hash(
+                    summary_id, planned.summary_text, messages, budget
+                ),
             )
         )
         try:

@@ -34,15 +34,11 @@ class ModelIn(BaseModel):
             raise ValueError("模型 config 包含不支持的配置项")
         for key in ("context_window", "max_output_tokens"):
             if key not in self.config:
-                continue
+                raise ValueError(f"模型配置必须包含 {key}")
             value = self.config[key]
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{key} 必须是正整数")
-        if (
-            "context_window" in self.config
-            and "max_output_tokens" in self.config
-            and self.config["max_output_tokens"] >= self.config["context_window"]
-        ):
+        if self.config["max_output_tokens"] >= self.config["context_window"]:
             raise ValueError("max_output_tokens 必须小于 context_window")
         timeout = self.config.get("timeout_seconds", 60)
         retries = self.config.get("max_retries", 1)

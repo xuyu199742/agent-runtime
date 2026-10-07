@@ -68,7 +68,12 @@ async def test_admin_rbac_pagination_and_audit():
 
             reader = await login(f"reader-{suffix}", "reader-secret-123")
             editor = await login(f"editor-{suffix}", "editor-secret-123")
-            body = {"name": f"model-{suffix}", "provider": "openai", "model_name": "gpt-test"}
+            body = {
+                "name": f"model-{suffix}",
+                "provider": "openai",
+                "model_name": "gpt-test",
+                "config": {"context_window": 8192, "max_output_tokens": 1024},
+            }
             assert (
                 await client.post("/api/v1/admin/models", json=body, headers=reader)
             ).status_code == 403

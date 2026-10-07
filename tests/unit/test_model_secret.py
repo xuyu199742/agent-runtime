@@ -17,13 +17,24 @@ def test_model_key_is_encrypted_and_not_returned(monkeypatch):
     )
     assert model.openai_api_key.get_secret_value() == "private-key"
 
-    body = ModelIn(name="test", provider="openai", model_name="gpt-test", api_key="private-key")
+    body = ModelIn(
+        name="test",
+        provider="openai",
+        model_name="gpt-test",
+        api_key="private-key",
+        config={"context_window": 8192, "max_output_tokens": 1024},
+    )
     assert body.api_key == "private-key"
     response = ModelOut(
         id="1", name="test", provider="openai", model_name="gpt-test", has_api_key=True
     )
     assert "api_key" not in response.model_dump()
     assert response.has_api_key is True
+
+
+def test_model_save_requires_context_limits():
+    with pytest.raises(ValueError, match="context_window"):
+        ModelIn(name="test", provider="openai", model_name="deepseek-flash")
 
 
 def test_missing_master_key_rejects_secret_write(monkeypatch):
