@@ -34,6 +34,7 @@ async def test_sse_replays_after_disconnect_and_pending_run_can_cancel():
                         "name": f"sse-model-{suffix}",
                         "provider": "openai",
                         "model_name": "fake",
+                        "config": {"context_window": 32768, "max_output_tokens": 4096},
                     },
                 )
             ).json()

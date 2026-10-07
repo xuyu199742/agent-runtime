@@ -48,6 +48,8 @@ const form = ref({
   timeout_seconds: 60,
   max_retries: 1,
   temperature: 0.7,
+  context_window: 32768,
+  max_output_tokens: 4096,
   enabled: true,
 });
 function open(row?: Model) {
@@ -61,6 +63,8 @@ function open(row?: Model) {
     timeout_seconds: row?.config?.timeout_seconds ?? 60,
     max_retries: row?.config?.max_retries ?? 1,
     temperature: row?.config?.temperature ?? 0.7,
+    context_window: row?.config?.context_window ?? 32768,
+    max_output_tokens: row?.config?.max_output_tokens ?? 4096,
     enabled: row?.enabled ?? true,
   };
   show.value = true;
@@ -76,6 +80,8 @@ function body() {
       timeout_seconds: form.value.timeout_seconds,
       max_retries: form.value.max_retries,
       temperature: form.value.temperature,
+      context_window: form.value.context_window,
+      max_output_tokens: form.value.max_output_tokens,
     },
     enabled: form.value.enabled,
   };
@@ -294,6 +300,15 @@ const columns: DataTableColumns<RecordData> = [
               :min="0"
               :max="2"
               :step="0.1"
+          /></n-form-item>
+          <n-form-item label="上下文窗口"
+            ><n-input-number
+              v-model:value="form.context_window"
+              :min="1" /></n-form-item
+          ><n-form-item label="输出预留"
+            ><n-input-number
+              v-model:value="form.max_output_tokens"
+              :min="1"
           /></n-form-item>
         </div>
         <n-form-item label="启用"

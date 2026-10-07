@@ -50,6 +50,7 @@ async def test_running_run_cancels_independently_of_sse(monkeypatch):
                         "name": f"cancel-model-{suffix}",
                         "provider": "openai",
                         "model_name": "fake",
+                        "config": {"context_window": 32768, "max_output_tokens": 4096},
                     },
                 )
             ).json()

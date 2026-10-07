@@ -61,6 +61,7 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
                         "name": f"worker-model-{suffix}",
                         "provider": "openai",
                         "model_name": "fake",
+                        "config": {"context_window": 32768, "max_output_tokens": 4096},
                     },
                 )
             ).json()

@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -344,6 +345,37 @@ class Artifact(Base):
     storage_key: Mapped[str] = mapped_column(String(100))
     size: Mapped[int] = mapped_column(BigInteger)
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+    __table_args__ = (UniqueConstraint("session_id", "revision"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    from_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
+    through_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
+    summary: Mapped[str] = mapped_column(Text)
+    token_estimate: Mapped[int] = mapped_column(Integer)
+    source_message_count: Mapped[int] = mapped_column(Integer)
+    model_provider: Mapped[str] = mapped_column(String(40))
+    model_name: Mapped[str] = mapped_column(String(120))
+    prompt_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunContextSnapshot(Base):
+    __tablename__ = "run_context_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    summary_id: Mapped[str | None] = mapped_column(ForeignKey("conversation_summaries.id"))
+    message_ids: Mapped[list] = mapped_column(JSONB)
+    estimated_tokens: Mapped[int] = mapped_column(Integer)
+    budget: Mapped[dict] = mapped_column(JSONB)
+    content_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

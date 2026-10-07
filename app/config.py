@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     http_tool_allowed_hosts: str = ""
     context_max_messages: int = Field(default=30, ge=1, le=100)
     context_max_tokens: int = Field(default=12000, ge=100, le=1000000)
+    context_soft_limit_ratio: float = Field(default=0.75, gt=0, lt=1)
+    context_hard_limit_ratio: float = Field(default=0.9, gt=0, le=1)
+    context_max_compaction_rounds: int = Field(default=2, ge=1, le=5)
+    context_safety_margin: int = Field(default=1000, ge=0, le=1_000_000)
     worker_concurrency: int = Field(default=10, ge=1, le=100)
     checkpoint_retention_hours: int = Field(default=24, ge=1, le=8760)
     artifact_storage_dir: str = "./data/artifacts"

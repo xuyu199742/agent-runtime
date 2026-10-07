@@ -39,6 +39,7 @@ async def test_redis_enqueue_failure_keeps_pending_run_for_recovery(monkeypatch)
                         "name": f"outage-model-{suffix}",
                         "provider": "openai",
                         "model_name": "fake",
+                        "config": {"context_window": 32768, "max_output_tokens": 4096},
                     },
                 )
             ).json()

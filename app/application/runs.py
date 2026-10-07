@@ -1,4 +1,5 @@
 from app.domain.errors import NotFound
+from app.execution.config import redact_execution_snapshot
 from app.persistence.repositories.runs import RunRepository
 
 
@@ -52,8 +53,7 @@ class RunService:
         spec = await self.repository.execution_spec(run.execution_spec_id)
         if spec is None:
             raise NotFound("ExecutionSpec 不存在")
-        snapshot = {**spec.snapshot, "model": {**spec.snapshot["model"]}}
-        snapshot["model"].pop("api_key_encrypted", None)
+        snapshot = redact_execution_snapshot(spec.snapshot)
         return {
             "id": spec.id,
             "agent_id": spec.agent_id,

@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 
+from app.application.execution_spec import build_execution_spec
 from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.persistence.repositories.conversations import ConversationRepository
+from app.runtime.tools.registry import ToolConfigurationError
 
 
 @dataclass(frozen=True)
@@ -97,8 +99,15 @@ class ConversationService:
         if await conversations.has_active_run(session_id):
             raise Conflict("Session 中已有执行中的 Run")
 
+        session = await conversations.session(session_id)
+        agent = await conversations.agent(session.agent_id)
+        model = await conversations.model(agent.model_id)
+        try:
+            draft = build_execution_spec(agent, model)
+        except ToolConfigurationError as exc:
+            raise InvalidConfiguration("工具配置无效") from exc
         created = await conversations.create_submission(
-            session_id, user_id, client_message_id, content, origin
+            session_id, user_id, client_message_id, content, origin, draft
         )
         if created is None:
             existing = await previous()

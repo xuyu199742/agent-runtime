@@ -31,7 +31,12 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
         ) as client:
             model = await client.post(
                 "/api/models",
-                json={"name": f"model-{suffix}", "provider": "openai", "model_name": "test-model"},
+                json={
+                    "name": f"model-{suffix}",
+                    "provider": "openai",
+                    "model_name": "test-model",
+                    "config": {"context_window": 32768, "max_output_tokens": 4096},
+                },
             )
             assert model.status_code == 201, model.text
             secured = await client.post(
