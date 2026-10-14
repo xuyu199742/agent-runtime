@@ -24,9 +24,12 @@ TRACE_TYPES = {
     "tool.completed",
     "tool.failed",
     "approval.required",
+    "approval.approved",
+    "approval.rejected",
+    "approval.cancelled",
     "artifact.created",
 }
-TRACE_FIELDS = {"step_id", "tool_call_id", "name", "code", "approval_id", "artifact_id"}
+TRACE_FIELDS = {"step_id", "tool_call_id", "name", "code", "approval_id", "artifact_id", "actor_id"}
 
 
 def trace_event(
@@ -57,6 +60,23 @@ class ExecutionRecorder:
 
     def __init__(self, db):
         self.db = db
+
+    def append_control_locked(
+        self,
+        run: Run,
+        kind: str,
+        data: dict,
+        *,
+        ref_type: str | None = None,
+        ref_id: str | None = None,
+    ) -> None:
+        """调用方先锁定 Run 行；同一事务分配序号并追加控制面事实。"""
+        if kind not in TRACE_TYPES:
+            raise ValueError(f"不支持的 Run 时间线事件：{kind}")
+        run.trace_sequence += 1
+        self.add_at_sequence(
+            run.id, run.trace_sequence, kind, data, ref_type=ref_type, ref_id=ref_id
+        )
 
     @staticmethod
     def _model_event(phase: str, action: str) -> str:

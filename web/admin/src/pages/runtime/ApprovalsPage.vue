@@ -83,6 +83,11 @@ const columns: DataTableColumns<RecordData> = [
     render: (row) => date(row.created_at),
   },
   {
+    title: "处理人",
+    key: "decided_by",
+    render: (row) => String(row.decided_by || "—"),
+  },
+  {
     title: "操作",
     key: "action",
     render: (row) =>
@@ -159,6 +164,7 @@ const columns: DataTableColumns<RecordData> = [
             'risk',
             'status',
             'created_at',
+            'decided_by',
             'decided_at',
           ]"
           :key="key"

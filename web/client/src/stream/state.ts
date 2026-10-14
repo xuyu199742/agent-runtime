@@ -44,18 +44,36 @@ export function applyRunEvent(
     case "approval.required":
       next.hasApproval = true;
       break;
+    case "approval.approved":
+    case "approval.rejected":
+    case "approval.cancelled":
+      next.hasApproval = false;
+      break;
     case "run.completed":
       next.status = "COMPLETED";
       next.partial = String(event.data.answer ?? next.partial);
       break;
     case "run.failed":
       next.status = "FAILED";
+      next.partial = "";
+      next.stepId = "";
+      next.hasApproval = false;
       break;
     case "run.cancelled":
       next.status = "CANCELLED";
+      next.partial = "";
+      next.stepId = "";
+      next.hasApproval = false;
       break;
     case "run.snapshot":
       next.status = String(event.data.status || next.status);
+      if (isTerminal(next.status)) {
+        next.hasApproval = false;
+        if (next.status !== "COMPLETED") {
+          next.partial = "";
+          next.stepId = "";
+        }
+      }
       break;
   }
   return next;

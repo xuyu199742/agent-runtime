@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 import openai
+import psycopg
 import structlog
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain_core.messages import HumanMessage
@@ -31,6 +32,7 @@ from app.persistence.repositories.runs import claim_run, end_run, extend_lease, 
 from app.persistence.repositories.tool_executions import ToolExecutionStore
 from app.persistence.repositories.traces import TRACE_TYPES, ExecutionRecorder
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
+from app.runtime.checkpoint import create_run_saver
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
@@ -215,7 +217,9 @@ async def run_agent(
         tools=build_tools(config.tool_definitions()),
         system_prompt=config.system_prompt,
         max_model_calls=config.max_model_calls,
-        checkpointer=saver,
+        checkpointer=create_run_saver(saver.conn, run_id, worker_id)
+        if worker_id and saver is not None
+        else saver,
         tool_execution_store=ToolExecutionStore(session_factory, worker_id),
         run_id=run_id,
         tool_policies={tool["name"]: tool for tool in config.tools},
@@ -226,16 +230,21 @@ async def run_agent(
 
     approval_decisions = None
     if resumed:
-        state = await runtime.graph.aget_state({"configurable": {"thread_id": run_id}})
-        if state.interrupts:
+        try:
+            interrupts = await runtime.inspect_interrupts(
+                run_id, require_checkpoint=run.waiting_at is not None
+            )
+        except psycopg.Error as exc:
+            raise CoordinationLost from exc
+        if interrupts:
             decisions = {}
             async with session_factory() as db:
                 approvals = ApprovalRepository(db)
-                for pending in state.interrupts:
-                    approval = await approvals.get(pending.value["approval_id"])
+                for pending in interrupts:
+                    approval = await approvals.get(pending.approval_id)
                     if approval is not None and approval.status in {"APPROVED", "REJECTED"}:
                         decisions[pending.id] = approval.status == "APPROVED"
-            if len(decisions) == len(state.interrupts):
+            if len(decisions) == len(interrupts):
                 approval_decisions = decisions
 
     async def emit(kind: str, data: dict) -> None:
@@ -270,6 +279,7 @@ async def run_agent(
         user_id=user_id,
         resume=resumed,
         approval_decisions=approval_decisions,
+        require_checkpoint=run.waiting_at is not None,
     )
 
 
@@ -289,7 +299,8 @@ async def execute_run(
             return "cancelled", None
         except RunWaiting as waiting:
             return "waiting", waiting
-        except (CoordinationLost, ContextLeaseLost):
+        except (CoordinationLost, ContextLeaseLost, psycopg.Error) as exc:
+            log.warning("Run 协调失效，等待租约恢复", run_id=run_id, error_type=type(exc).__name__)
             return "lease_lost", None
         except Exception as exc:  # noqa: BLE001 - Run 错误需要先转为业务终态
             return "failed", exc

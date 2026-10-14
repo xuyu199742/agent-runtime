@@ -23,7 +23,7 @@ async def list_approvals(
 ):
     rows, total = await approvals.page(page, page_size, status)
     return {
-        "items": [approval_out(row) for row in rows],
+        "items": [approval_out(row, include_actor=True) for row in rows],
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -32,7 +32,7 @@ async def list_approvals(
 
 @router.get("/{approval_id}")
 async def detail(approval_id: str, _user: Viewer, approvals: Approvals):
-    return approval_out(await approvals.get(approval_id))
+    return approval_out(await approvals.get(approval_id), include_actor=True)
 
 
 async def decide(
@@ -55,7 +55,7 @@ async def decide(
     )
     if await runs.status(approval.run_id) == "PENDING":
         await queue_resolved_run(request, approval.run_id)
-    return approval_out(approval)
+    return approval_out(approval, include_actor=True)
 
 
 @router.post("/{approval_id}/approve")

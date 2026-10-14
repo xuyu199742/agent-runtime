@@ -29,7 +29,9 @@ const id = computed(() => String(route.params.id)),
   tab = ref("overview");
 const run = ref<RecordData | null>(null),
   spec = ref<RecordData | null>(null),
-  trace = ref<RecordData[]>([]),
+  timeline = ref<RecordData[]>([]),
+  timelinePage = ref(1),
+  timelineTotal = ref(0),
   executions = ref<RecordData[]>([]),
   artifacts = ref<RecordData[]>([]);
 const date = (value: unknown) =>
@@ -37,20 +39,33 @@ const date = (value: unknown) =>
     ? new Date(String(value)).toLocaleString("zh-CN", { hour12: false })
     : "—";
 const json = (value: unknown) => JSON.stringify(value, null, 2);
+const recoveryErrorText = (code: unknown) => {
+  const messages: Record<string, string> = {
+    APPROVAL_RECOVERY_LOST:
+      "审批检查点丢失，Run 已安全停止。请核对审批与工具记录。",
+    TOOL_RESULT_UNAVAILABLE:
+      "已完成的 Tool 缺少可重放结果，Run 已安全停止。请核对工具事实。",
+  };
+  return (
+    messages[String(code)] || "请核对时间线与执行事实，再决定是否发起新的 Run。"
+  );
+};
 async function load() {
   loading.value = true;
   try {
-    const [detail, snapshot, timeline, tools] = await Promise.all([
+    const [detail, snapshot, timelineResult, tools] = await Promise.all([
       api.get<RecordData>(`/api/v1/admin/runs/${id.value}`),
       api.get<RecordData>(`/api/v1/admin/runs/${id.value}/execution-spec`),
       api.get<Page<RecordData>>(
-        `/api/v1/admin/runs/${id.value}/trace?page_size=200`,
+        `/api/v1/admin/runs/${id.value}/timeline?page_size=100`,
       ),
       api.get<RecordData[]>(`/api/v1/admin/runs/${id.value}/tool-executions`),
     ]);
     run.value = detail;
     spec.value = snapshot;
-    trace.value = timeline.items;
+    timelinePage.value = 1;
+    timelineTotal.value = timelineResult.total;
+    timeline.value = timelineResult.items;
     executions.value = tools;
     artifacts.value = auth.can("artifact:view")
       ? (
@@ -63,6 +78,19 @@ async function load() {
     message.error(error instanceof Error ? error.message : "Run 加载失败");
   } finally {
     loading.value = false;
+  }
+}
+async function loadMoreTimeline() {
+  try {
+    const nextPage = timelinePage.value + 1;
+    const result = await api.get<Page<RecordData>>(
+      `/api/v1/admin/runs/${id.value}/timeline?page=${nextPage}&page_size=100`,
+    );
+    timeline.value.push(...result.items);
+    timelinePage.value = nextPage;
+    timelineTotal.value = result.total;
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : "Timeline 加载失败");
   }
 }
 onMounted(load);
@@ -84,7 +112,7 @@ function confirm(kind: "cancel" | "retry") {
     content:
       kind === "cancel"
         ? "将终止当前执行。"
-        : "将创建一个新的 Run，保留原 Run 记录。",
+        : "将创建新的 Run。请先核对原 Run 的时间线和工具执行结果。",
     positiveText: "确认",
     negativeText: "返回",
     onPositiveClick: () => operation(kind),
@@ -161,31 +189,50 @@ function confirm(kind: "cancel" | "retry") {
           <div v-if="run?.error_code" class="detail-section">
             <h3>错误</h3>
             <status-label :value="String(run.error_code)" />
+            <p>{{ recoveryErrorText(run.error_code) }}</p>
           </div>
-        </div></div></n-tab-pane
-    ><n-tab-pane name="timeline" :tab="`Timeline · ${trace.length}`"
+        </div>
+      </div></n-tab-pane
+    ><n-tab-pane name="timeline" :tab="`Timeline · ${timelineTotal}`"
       ><div class="panel">
         <div class="panel-body">
-          <n-timeline v-if="trace.length"
+          <n-timeline v-if="timeline.length"
             ><n-timeline-item
-              v-for="event in trace"
-              :key="String(event.id)"
-              :title="String(event.type)"
+              v-for="event in timeline"
+              :key="String(event.sequence)"
+              :title="`#${event.sequence} · ${event.event_type}`"
               :content="
-                Object.entries((event.data as RecordData) || {})
-                  .map(([key, value]) => `${key}: ${value}`)
+                [
+                  event.summary,
+                  event.attempt && Number(event.attempt) > 1
+                    ? `尝试 ${event.attempt}`
+                    : null,
+                  event.ref_type && event.ref_id
+                    ? `${event.ref_type}: ${event.ref_id}`
+                    : null,
+                  event.duration != null ? `${event.duration} ms` : null,
+                ]
+                  .filter(Boolean)
                   .join(' · ')
               "
               :time="date(event.created_at)"
               :type="
-                String(event.type).includes('failed')
+                String(event.event_type).includes('failed') ||
+                String(event.event_type).includes('rejected')
                   ? 'error'
-                  : String(event.type).includes('completed')
+                  : String(event.event_type).includes('completed') ||
+                      String(event.event_type).includes('approved')
                     ? 'success'
                     : 'info'
               "
           /></n-timeline>
           <div v-else class="empty-copy">暂无生命周期记录</div>
+          <n-button
+            v-if="timeline.length < timelineTotal"
+            secondary
+            @click="loadMoreTimeline"
+            >加载更多</n-button
+          >
         </div>
       </div></n-tab-pane
     ><n-tab-pane name="spec" tab="Execution Spec"

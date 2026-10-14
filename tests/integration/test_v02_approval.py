@@ -17,6 +17,7 @@ from app.persistence.database import (
     Message,
     ModelConfig,
     Run,
+    RunTraceEvent,
     Session,
     ToolDefinition,
     ToolExecution,
@@ -32,8 +33,10 @@ class ApprovalModel(FakeMessagesListChatModel):
         return self
 
 
-@pytest.mark.parametrize("approve", [True, False])
-async def test_tool_approval_waits_then_resumes_from_checkpoint(monkeypatch, approve):
+@pytest.mark.parametrize("approve,drop_checkpoint", [(True, False), (False, False), (True, True)])
+async def test_tool_approval_waits_then_resumes_from_checkpoint(
+    monkeypatch, approve, drop_checkpoint
+):
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)
     redis = Redis.from_url(os.environ["TEST_REDIS_URL"], decode_responses=True)
@@ -117,6 +120,8 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(monkeypatch, app
 
             async with factory() as db:
                 await ApprovalRepository(db).decide(approval_id, "approval-user", approve)
+            if drop_checkpoint:
+                await saver.adelete_thread(run_id)
             await queue.enqueue(run_id)
             resumed = (await queue.read("approval-worker", block_ms=100))[0]
             await runner.process_entry(
@@ -126,6 +131,26 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(monkeypatch, app
         async with factory() as db:
             run = await db.get(Run, run_id)
             execution = await db.scalar(select(ToolExecution).where(ToolExecution.run_id == run_id))
+            timeline = list(
+                await db.scalars(
+                    select(RunTraceEvent)
+                    .where(RunTraceEvent.run_id == run_id)
+                    .order_by(RunTraceEvent.sequence)
+                )
+            )
+            decisions = [row for row in timeline if row.event_type.startswith("approval.")]
+            assert [row.sequence for row in timeline] == list(range(1, len(timeline) + 1))
+            assert [row.event_type for row in decisions] == [
+                "approval.required",
+                "approval.approved" if approve else "approval.rejected",
+            ]
+            assert decisions[1].ref_id == approval_id
+            assert decisions[1].data["actor_id"] == "approval-user"
+            if drop_checkpoint:
+                assert run.status == "FAILED"
+                assert run.error_code == "APPROVAL_RECOVERY_LOST"
+                assert execution is None
+                return
             assert run.status == "COMPLETED"
             if approve:
                 assert execution.status == "COMPLETED"
@@ -191,5 +216,16 @@ async def test_waiting_run_cancel_closes_pending_approval():
             assert await ApprovalRepository(db).cancel_waiting(run.id)
             assert (await db.get(Run, run.id)).status == "CANCELLED"
             assert (await db.get(Approval, approval.id)).status == "CANCELLED"
+            timeline = list(
+                await db.scalars(
+                    select(RunTraceEvent)
+                    .where(RunTraceEvent.run_id == run.id)
+                    .order_by(RunTraceEvent.sequence)
+                )
+            )
+            assert [(row.sequence, row.event_type, row.ref_id) for row in timeline] == [
+                (1, "approval.cancelled", approval.id),
+                (2, "run.cancelled", None),
+            ]
     finally:
         await engine.dispose()

@@ -1,12 +1,18 @@
+import asyncio
+import hashlib
 import os
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.base import empty_checkpoint
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.context.errors import ContextLeaseLost
 from app.infrastructure.passwords import hash_password
 from app.main import app
 from app.persistence.database import (
@@ -26,9 +32,13 @@ from app.persistence.database import (
 )
 from app.persistence.repositories import traces
 from app.persistence.repositories.approvals import ApprovalRepository
-from app.persistence.repositories.runs import finish_run
+from app.persistence.repositories.runs import end_run, finish_run
 from app.persistence.repositories.tool_executions import ToolExecutionStore
+from app.runtime.checkpoint import create_checkpoint_pool, create_run_saver, create_saver
+from app.runtime.errors import ToolResultUnavailable
+from app.runtime.middleware import ToolErrorMiddleware
 from app.worker.model_recording import ModelCallJournal
+from app.worker.runner import classify_run_error
 
 
 async def _running_run(factory):
@@ -166,6 +176,139 @@ async def test_model_step_retry_records_new_attempt_and_fences_old_owner():
             ]
             assert rows[0].output_message is None
             assert rows[1].output_message["content"] == "新结果"
+    finally:
+        await engine.dispose()
+
+
+async def test_model_fact_committed_before_checkpoint_keeps_both_attempts():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        run_id = await _running_run(factory)
+        step_id = f"{run_id}:model:1"
+        journal = ModelCallJournal(factory, run_id, "worker-a", "openai", "fake")
+        first = await journal.start(step_id, "AGENT", [HumanMessage(content="hi")])
+        await journal.complete(first, AIMessage(content="first answer"))
+        # 故障注入：模型事实已经提交，LangGraph 尚未来得及写检查点。
+        pool = create_checkpoint_pool(os.environ["TEST_CHECKPOINT_DATABASE_URL"], 1)
+        async with pool:
+            saver = create_saver(pool)
+            assert await saver.aget_tuple({"configurable": {"thread_id": run_id}}) is None
+        second = await journal.start(step_id, "AGENT", [HumanMessage(content="hi")])
+        await journal.complete(second, AIMessage(content="second answer"))
+        async with factory() as db:
+            rows = list(
+                await db.scalars(
+                    select(ModelExecution)
+                    .where(ModelExecution.run_id == run_id)
+                    .order_by(ModelExecution.attempt)
+                )
+            )
+            assert [(row.attempt, row.output_message["content"]) for row in rows] == [
+                (1, "first answer"),
+                (2, "second answer"),
+            ]
+            events = list(
+                await db.scalars(
+                    select(RunTraceEvent)
+                    .where(RunTraceEvent.run_id == run_id)
+                    .order_by(RunTraceEvent.sequence)
+                )
+            )
+            assert [(row.event_type, row.attempt) for row in events] == [
+                ("model.started", 1),
+                ("model.completed", 1),
+                ("model.started", 2),
+                ("model.completed", 2),
+            ]
+    finally:
+        await engine.dispose()
+
+
+async def test_late_checkpoint_write_is_possible_without_fence_and_rejected_with_fence():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    pool = create_checkpoint_pool(os.environ["TEST_CHECKPOINT_DATABASE_URL"], 2)
+    try:
+        run_id = await _running_run(factory)
+        config = {"configurable": {"thread_id": run_id, "checkpoint_ns": ""}}
+        metadata = {"source": "loop", "step": 0, "parents": {}}
+        async with pool:
+            plain = create_saver(pool)
+            await plain.setup()
+            first = empty_checkpoint()
+            first["channel_values"] = {"owner": "worker-b"}
+            old_worker_ready = asyncio.Event()
+            allow_old_worker = asyncio.Event()
+
+            async def late_old_worker_write():
+                old_worker_ready.set()
+                await allow_old_worker.wait()
+                late = empty_checkpoint()
+                late["channel_values"] = {"owner": "worker-a"}
+                await plain.aput(config, late, metadata, {})
+                return late
+
+            old_task = asyncio.create_task(late_old_worker_write())
+            await old_worker_ready.wait()
+            async with factory() as db:
+                run = await db.get(Run, run_id, with_for_update=True)
+                run.lease_owner = "worker-b"
+                await db.commit()
+            await plain.aput(config, first, metadata, {})
+            allow_old_worker.set()
+            late = await old_task
+            assert (await plain.aget_tuple(config)).checkpoint["channel_values"][
+                "owner"
+            ] == "worker-a"
+
+            fenced = create_run_saver(pool, run_id, "worker-a")
+            with pytest.raises(ContextLeaseLost):
+                await fenced.aput(config, empty_checkpoint(), metadata, {})
+            with pytest.raises(ContextLeaseLost):
+                await fenced.aput_writes(
+                    {"configurable": {**config["configurable"], "checkpoint_id": late["id"]}},
+                    [("channel", "late")],
+                    "late-task",
+                )
+            assert (await plain.aget_tuple(config)).checkpoint["id"] == late["id"]
+    finally:
+        await engine.dispose()
+
+
+async def test_completed_tool_with_missing_result_fails_run_without_reexecution():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        run_id = await _running_run(factory)
+        store = ToolExecutionStore(factory, "worker-a")
+        call = {"name": "echo", "id": "call-1", "args": {"text": "hello"}}
+        args_hash = hashlib.sha256(b'{"text": "hello"}').hexdigest()
+        await store.start(run_id, call["id"], call["name"], "READ_ONLY", args_hash)
+        await store.finish(run_id, call["id"], "COMPLETED", None, None)
+        invoked = False
+
+        async def handler(_request):
+            nonlocal invoked
+            invoked = True
+            raise AssertionError("不能重新执行已经完成的 Tool")
+
+        middleware = ToolErrorMiddleware(store=store, run_id=run_id)
+        with pytest.raises(ToolResultUnavailable) as error:
+            await middleware.awrap_tool_call(SimpleNamespace(tool_call=call), handler)
+        assert not invoked
+        code = classify_run_error(error.value)
+        async with factory() as db:
+            assert await end_run(db, run_id, "worker-a", "FAILED", code)
+        async with factory() as db:
+            run = await db.get(Run, run_id)
+            tool = await db.scalar(select(ToolExecution).where(ToolExecution.run_id == run_id))
+            assert (run.status, run.error_code, tool.status, tool.attempt) == (
+                "FAILED",
+                "TOOL_RESULT_UNAVAILABLE",
+                "COMPLETED",
+                1,
+            )
     finally:
         await engine.dispose()
 

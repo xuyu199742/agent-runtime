@@ -22,7 +22,6 @@ import {
   MenuOutline,
   PaperPlaneOutline,
   PersonOutline,
-  RefreshOutline,
   SearchOutline,
   SparklesOutline,
   StopOutline,
@@ -30,6 +29,7 @@ import {
 } from "@vicons/ionicons5";
 import { useAuthStore } from "../stores/auth";
 import { useChat } from "../composables/useChat";
+import { runErrorText } from "../stream/errors";
 import { isTerminal } from "../stream/state";
 import ArtifactViewer from "../components/ArtifactViewer.vue";
 
@@ -104,15 +104,10 @@ const currentAgent = computed(() =>
   ),
 );
 const busy = computed(() => !!run.value && !isTerminal(run.value.status));
-const lastUserContent = computed(
-  () =>
-    [...messages.value]
-      .reverse()
-      .find((item) => ["user", "human"].includes(item.role.toLowerCase()))
-      ?.content || "",
-);
 const pendingApprovals = computed(() =>
-  approvals.value.filter((item) => item.status === "PENDING"),
+  run.value && !isTerminal(run.value.status) && !isTerminal(stream.value.status)
+    ? approvals.value.filter((item) => item.status === "PENDING")
+    : [],
 );
 const statusText = computed(
   () =>
@@ -498,16 +493,7 @@ async function logout() {
             class="run-result"
           >
             <strong>{{ statusText }}</strong
-            ><span>{{ run.error || "本次执行没有完成。" }}</span
-            ><button
-              v-if="lastUserContent"
-              @click="
-                draft = lastUserContent;
-                submit();
-              "
-            >
-              <n-icon :component="RefreshOutline" /> 再次发送
-            </button>
+            ><span>{{ runErrorText(run.error) }}</span>
           </div>
           <div v-if="artifacts.length" class="thread-artifacts">
             <span>本次会话的文件</span

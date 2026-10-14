@@ -5,8 +5,8 @@ from app.messaging.client import close_if_owned, redis_for_request
 from app.messaging.run_queue import RunQueue
 
 
-def approval_out(row):
-    return {
+def approval_out(row, *, include_actor: bool = False):
+    result = {
         "id": row.id,
         "run_id": row.run_id,
         "title": row.title,
@@ -17,6 +17,9 @@ def approval_out(row):
         "created_at": row.created_at,
         "decided_at": row.decided_at,
     }
+    if include_actor:
+        result["decided_by"] = row.decided_by
+    return result
 
 
 async def queue_resolved_run(request: Request, run_id: str) -> None:

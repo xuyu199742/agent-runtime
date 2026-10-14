@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import TypedDict
 
 from langchain.agents import create_agent
@@ -9,6 +10,7 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
 from app.runtime.approval import ApprovalMiddleware
+from app.runtime.errors import ApprovalRecoveryLost
 from app.runtime.middleware import RunContextMiddleware, ToolErrorMiddleware, TracingMiddleware
 
 
@@ -29,6 +31,12 @@ class RunWaiting(Exception):
 
 EventSink = Callable[[str, dict], Awaitable[None]]
 CancelCheck = Callable[[], Awaitable[bool]]
+
+
+@dataclass(frozen=True)
+class RuntimeInterrupt:
+    id: str
+    approval_id: str
 
 
 class LangChainAgentRuntime:
@@ -62,6 +70,21 @@ class LangChainAgentRuntime:
         )
         self.has_checkpointer = checkpointer is not None
 
+    async def inspect_interrupts(
+        self, run_id: str, *, require_checkpoint: bool = False
+    ) -> list[RuntimeInterrupt]:
+        if not self.has_checkpointer:
+            if require_checkpoint:
+                raise ApprovalRecoveryLost("审批恢复所需检查点不存在")
+            return []
+        state = await self.graph.aget_state({"configurable": {"thread_id": run_id}})
+        if require_checkpoint and state.created_at is None:
+            raise ApprovalRecoveryLost("审批恢复所需检查点不存在")
+        return [
+            RuntimeInterrupt(id=item.id, approval_id=item.value["approval_id"])
+            for item in state.interrupts
+        ]
+
     async def run(
         self,
         run_id: str,
@@ -72,11 +95,14 @@ class LangChainAgentRuntime:
         user_id: str | None = None,
         resume: bool = False,
         approval_decisions: dict[str, bool] | None = None,
+        require_checkpoint: bool = False,
     ) -> str:
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 1000}
         input_state = {"messages": list(messages)}
         if resume and self.has_checkpointer:
             state = await self.graph.aget_state(config)
+            if require_checkpoint and state.created_at is None:
+                raise ApprovalRecoveryLost("审批恢复所需检查点不存在")
             if state.values:
                 if not state.next:
                     for message in reversed(state.values.get("messages", [])):
