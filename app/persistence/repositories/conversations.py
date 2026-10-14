@@ -4,6 +4,8 @@ from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution.config import execution_spec_from_draft
+from app.execution.draft import ExecutionSpecDraft
 from app.persistence.database import (
     AgentDefinition,
     Artifact,
@@ -13,7 +15,6 @@ from app.persistence.database import (
     Session,
     new_id,
 )
-from app.persistence.execution_spec import freeze_execution_spec
 
 
 class ConversationRepository:
@@ -145,7 +146,10 @@ class ConversationRepository:
         client_message_id: str,
         content: str,
         origin: str = "CLIENT",
+        draft: ExecutionSpecDraft | None = None,
     ) -> tuple[str, str] | None:
+        if draft is None:
+            raise ValueError("创建 Run 必须提供 ExecutionSpec")
         message = Message(
             id=new_id(),
             session_id=session_id,
@@ -155,9 +159,7 @@ class ConversationRepository:
             client_message_id=client_message_id,
         )
         session = await self.db.get(Session, session_id)
-        agent = await self.db.get(AgentDefinition, session.agent_id)
-        model = await self.db.get(ModelConfig, agent.model_id)
-        spec = freeze_execution_spec(agent, model)
+        spec = execution_spec_from_draft(draft)
         run = Run(
             id=new_id(),
             session_id=session_id,

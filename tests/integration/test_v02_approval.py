@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.application.execution_spec import build_execution_spec
 from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
@@ -53,7 +54,10 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(monkeypatch, app
     try:
         async with factory() as db:
             model_config = ModelConfig(
-                name=f"approval-model-{suffix}", provider="openai", model_name="fake"
+                name=f"approval-model-{suffix}",
+                provider="openai",
+                model_name="fake",
+                config={"context_window": 32768, "max_output_tokens": 4096},
             )
             tool = await db.scalar(select(ToolDefinition).where(ToolDefinition.name == "echo"))
             if tool is None:
@@ -75,10 +79,16 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(monkeypatch, app
             await db.flush()
             session = Session(agent_id=agent.id, user_id="approval-user")
             db.add(session)
+            await db.flush()
+            draft = build_execution_spec(agent, model_config)
             await db.commit()
         async with factory() as db:
             accepted = await ConversationRepository(db).create_submission(
-                session.id, "approval-user", f"approval-{suffix}", "ask approval"
+                session.id,
+                "approval-user",
+                f"approval-{suffix}",
+                "ask approval",
+                draft=draft,
             )
             run_id = accepted[1]
 

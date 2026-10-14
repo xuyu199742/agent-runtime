@@ -29,6 +29,22 @@ def test_openai_compatible_model_uses_configured_endpoint():
     )
     assert model.model_name == "qwen"
     assert str(model.openai_api_base) == "http://localhost:8001/v1"
+    assert model.max_tokens is None
+
+
+def test_max_output_tokens_is_sent_as_model_output_limit():
+    model = build_model(
+        resolve_model_config(
+            ModelDefinition(
+                provider="openai-compatible",
+                model_name="deepseek-flash",
+                base_url="https://api.deepseek.com",
+                config={"context_window": 1_048_576, "max_output_tokens": 393_216},
+            ),
+            None,
+        )
+    )
+    assert model.max_tokens == 393_216
 
 
 def test_calculator_rejects_code_execution():

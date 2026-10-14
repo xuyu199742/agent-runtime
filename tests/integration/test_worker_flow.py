@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.main import app
 from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
-from app.persistence.database import RunTraceEvent, ToolExecution, get_db
+from app.persistence.database import ModelExecution, RunTraceEvent, ToolExecution, get_db
 from app.worker import runner as worker
 
 
@@ -61,6 +61,7 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
                         "name": f"worker-model-{suffix}",
                         "provider": "openai",
                         "model_name": "fake",
+                        "config": {"context_window": 32768, "max_output_tokens": 4096},
                     },
                 )
             ).json()
@@ -120,6 +121,18 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
                 assert execution.status == "COMPLETED"
                 assert execution.idempotency_key == f"{run_id}:call-e2e"
                 assert execution.attempt == 1
+                model_calls = list(
+                    await db.scalars(
+                        select(ModelExecution)
+                        .where(ModelExecution.run_id == run_id)
+                        .order_by(ModelExecution.started_at, ModelExecution.id)
+                    )
+                )
+                assert len(model_calls) == 2
+                assert all(
+                    call.phase == "AGENT" and call.status == "COMPLETED" for call in model_calls
+                )
+                assert model_calls[-1].output_message["content"] == "答案是 4"
                 trace = (
                     await db.scalars(
                         select(RunTraceEvent)
@@ -138,8 +151,28 @@ async def test_message_queue_worker_tool_answer_and_sse(monkeypatch):
             assert "event: run.completed" in events.text
             assert "答案是 4" in events.text
             await redis.delete(EventStore.key(run_id), EventStore.sequence_key(run_id))
+            async with AsyncPostgresSaver.from_conn_string(
+                os.environ["TEST_CHECKPOINT_DATABASE_URL"]
+            ) as saver:
+                await saver.adelete_thread(run_id)
+                assert await saver.aget_tuple({"configurable": {"thread_id": run_id}}) is None
             durable_run = await client.get(f"/api/runs/{run_id}")
             assert durable_run.json()["answer"] == "答案是 4"
+            async with factory() as db:
+                timeline = list(
+                    await db.scalars(
+                        select(RunTraceEvent)
+                        .where(RunTraceEvent.run_id == run_id)
+                        .order_by(RunTraceEvent.sequence)
+                    )
+                )
+                assert [item.sequence for item in timeline] == list(range(1, len(timeline) + 1))
+                assert [item.event_type for item in timeline].count("model.completed") == 2
+                assert (
+                    next(item for item in timeline if item.event_type == "tool.completed").ref_id
+                    == execution.id
+                )
+                assert timeline[-1].event_type == "run.completed"
 
             monkeypatch.setattr(
                 worker, "build_model", lambda _config: (_ for _ in ()).throw(ValueError("缺少凭证"))

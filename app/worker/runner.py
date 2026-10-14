@@ -4,14 +4,17 @@ import httpx
 import openai
 import structlog
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
-from app.domain.agent import ModelDefinition, ToolDefinition
+from app.context.errors import ContextLeaseLost, ContextRunError
+from app.domain.agent import ModelDefinition
 from app.domain.session import ConversationTurn
+from app.execution.config import resolve_execution_config
 from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
@@ -26,11 +29,13 @@ from app.persistence.repositories.approvals import ApprovalRepository
 from app.persistence.repositories.conversations import ConversationRepository
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run, wait_run
 from app.persistence.repositories.tool_executions import ToolExecutionStore
-from app.persistence.repositories.traces import TRACE_TYPES, TraceRepository
+from app.persistence.repositories.traces import TRACE_TYPES, ExecutionRecorder
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
 from app.runtime.context import build_context
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
+from app.worker.context_planning import prepare_v2_messages
+from app.worker.model_recording import ModelCallJournal
 
 log = structlog.get_logger()
 
@@ -40,6 +45,8 @@ class CoordinationLost(Exception):
 
 
 def classify_run_error(exc: Exception) -> str:
+    if isinstance(exc, ContextRunError):
+        return exc.code
     if isinstance(exc, ModelCallLimitExceededError):
         return "VALIDATION_ERROR"
     if isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
@@ -53,10 +60,29 @@ def classify_run_error(exc: Exception) -> str:
     return "INTERNAL_ERROR"
 
 
-async def safe_publish(events: EventStore, run_id: str, kind: str, data: dict) -> None:
-    if kind in TRACE_TYPES - {"run.completed", "run.failed", "run.cancelled", "run.waiting"}:
+async def safe_publish(
+    events: EventStore,
+    run_id: str,
+    kind: str,
+    data: dict,
+    *,
+    worker_id: str | None = None,
+    record: bool = True,
+) -> None:
+    if record and kind in TRACE_TYPES - {
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "run.waiting",
+    }:
         async with session_factory() as db:
-            await TraceRepository(db).record(run_id, kind, data)
+            if (
+                worker_id is None
+                or await ExecutionRecorder(db).append(run_id, kind, data, worker_id=worker_id)
+                is None
+            ):
+                raise ContextLeaseLost
+            await db.commit()
     try:
         await events.publish(run_id, kind, data)
     except RedisError:
@@ -99,93 +125,103 @@ async def run_agent(
         spec = await db.get(ExecutionSpec, run.execution_spec_id) if run.execution_spec_id else None
         if run.execution_spec_id and spec is None:
             raise ValueError("Run 配置快照不存在")
-        snapshot = spec.snapshot if spec else None
-        agent = await db.get(AgentDefinition, session.agent_id) if snapshot is None else None
+        agent = await db.get(AgentDefinition, session.agent_id) if spec is None else None
         model_config = await db.get(ModelConfig, agent.model_id) if agent is not None else None
-        context_policy = (
-            snapshot["context"]
-            if snapshot
-            else {
-                "max_messages": get_settings().context_max_messages,
-                "max_tokens": get_settings().context_max_tokens,
-            }
-        )
-        history = await ConversationRepository(db).recent_messages(
-            session.id, run.created_at, context_policy["max_messages"]
-        )
+        config = resolve_execution_config(spec, agent, model_config, get_settings())
+        history = None
+        if config.schema_version < 2:
+            history = await ConversationRepository(db).recent_messages(
+                session.id,
+                run.created_at,
+                config.v1_max_messages or get_settings().context_max_messages,
+            )
+        session_id = session.id
+        user_id = session.user_id
 
     structlog.contextvars.clear_contextvars()
     log_context = {
         "request_id": run_id,
         "run_id": run_id,
-        "session_id": session.id,
-        "user_id": session.user_id,
+        "session_id": session_id,
+        "user_id": user_id,
     }
     if worker_id is not None:
         log_context["worker_id"] = worker_id
     structlog.contextvars.bind_contextvars(**log_context)
 
-    await safe_publish(events, run_id, "run.resumed" if resumed else "run.started", {})
-    model_data = (
-        snapshot["model"]
-        if snapshot
-        else {
-            "provider": model_config.provider,
-            "model_name": model_config.model_name,
-            "base_url": model_config.base_url,
-            "config": model_config.config,
-            "api_key_encrypted": model_config.api_key_encrypted,
-        }
+    chat_model = build_model(
+        resolve_model_config(
+            ModelDefinition(
+                provider=config.provider,
+                model_name=config.model_name,
+                base_url=config.base_url,
+                config=config.model_options,
+                enabled=config.enabled,
+            ),
+            config.api_key_encrypted,
+        )
     )
-    tool_data = (
-        snapshot["tools"]
-        if snapshot
-        else [
-            {
-                "name": tool.name,
-                "type": tool.type,
-                "description": tool.description,
-                "config": tool.config,
-                "policy": tool.policy,
-                "effect_type": tool.effect_type,
-                "failure_policy": tool.failure_policy,
-            }
-            for tool in agent.tools
-        ]
+
+    journal = (
+        ModelCallJournal(session_factory, run_id, worker_id, config.provider, config.model_name)
+        if worker_id is not None
+        else None
+    )
+    summary_call_number = 0
+
+    async def summarize(prompt: str) -> str:
+        # 摘要是上下文基础设施，不进入 Agent，也不消耗 max_model_calls。
+        nonlocal summary_call_number
+        summary_call_number += 1
+        message = HumanMessage(content=prompt)
+        execution_id = (
+            await journal.start(
+                f"{run_id}:summary:{summary_call_number}", "CONTEXT_SUMMARY", [message]
+            )
+            if journal is not None
+            else None
+        )
+        try:
+            response = await chat_model.ainvoke([message])
+        except Exception:
+            if execution_id is not None:
+                await journal.fail(execution_id)
+            raise
+        if execution_id is not None:
+            await journal.complete(execution_id, response)
+        content = response.content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+            )
+        return str(content)
+
+    if config.schema_version >= 2:
+        messages, force_resume = await prepare_v2_messages(
+            run_id, worker_id, config, saver, summarize, session_factory
+        )
+        resumed = resumed or force_resume
+    else:
+        messages = build_context(
+            [ConversationTurn(role=item.role, content=item.content) for item in history],
+            max_messages=config.v1_max_messages or get_settings().context_max_messages,
+            max_tokens=config.v1_max_tokens or get_settings().context_max_tokens,
+        )
+    await safe_publish(
+        events, run_id, "run.resumed" if resumed else "run.started", {}, worker_id=worker_id
     )
     runtime = LangChainAgentRuntime(
-        model=build_model(
-            resolve_model_config(
-                ModelDefinition(
-                    provider=model_data["provider"],
-                    model_name=model_data["model_name"],
-                    base_url=model_data["base_url"],
-                    config=model_data["config"],
-                    enabled=True if snapshot else model_config.enabled,
-                ),
-                model_data["api_key_encrypted"],
-            )
-        ),
-        tools=build_tools(
-            [
-                ToolDefinition(
-                    name=tool["name"],
-                    type=tool["type"],
-                    description=tool["description"],
-                    config=tool["config"],
-                    policy=tool["policy"],
-                    enabled=True,
-                )
-                for tool in tool_data
-            ]
-        ),
-        system_prompt=snapshot["system_prompt"] if snapshot else agent.system_prompt,
-        max_model_calls=snapshot["max_model_calls"] if snapshot else agent.max_model_calls,
+        model=chat_model,
+        tools=build_tools(config.tool_definitions()),
+        system_prompt=config.system_prompt,
+        max_model_calls=config.max_model_calls,
         checkpointer=saver,
-        tool_execution_store=ToolExecutionStore(session_factory),
+        tool_execution_store=ToolExecutionStore(session_factory, worker_id),
         run_id=run_id,
-        tool_policies={tool["name"]: tool for tool in tool_data},
+        tool_policies={tool["name"]: tool for tool in config.tools},
         approval_session_factory=session_factory,
+        model_call_journal=journal,
+        worker_id=worker_id,
     )
 
     approval_decisions = None
@@ -203,7 +239,21 @@ async def run_agent(
                 approval_decisions = decisions
 
     async def emit(kind: str, data: dict) -> None:
-        await safe_publish(events, run_id, kind, data)
+        await safe_publish(
+            events,
+            run_id,
+            kind,
+            data,
+            worker_id=worker_id,
+            record=kind
+            not in {
+                "model.started",
+                "model.completed",
+                "tool.started",
+                "tool.completed",
+                "tool.failed",
+            },
+        )
 
     async def should_cancel() -> bool:
         try:
@@ -213,15 +263,11 @@ async def run_agent(
 
     return await runtime.run(
         run_id,
-        build_context(
-            [ConversationTurn(role=item.role, content=item.content) for item in history],
-            max_messages=context_policy["max_messages"],
-            max_tokens=context_policy["max_tokens"],
-        ),
+        messages,
         emit,
         should_cancel,
-        session_id=session.id,
-        user_id=session.user_id,
+        session_id=session_id,
+        user_id=user_id,
         resume=resumed,
         approval_decisions=approval_decisions,
     )
@@ -243,7 +289,7 @@ async def execute_run(
             return "cancelled", None
         except RunWaiting as waiting:
             return "waiting", waiting
-        except CoordinationLost:
+        except (CoordinationLost, ContextLeaseLost):
             return "lease_lost", None
         except Exception as exc:  # noqa: BLE001 - Run 错误需要先转为业务终态
             return "failed", exc
@@ -278,7 +324,7 @@ async def execute_run(
         if waiting:
             await safe_publish(events, run_id, "run.waiting", {})
             for approval in value.approvals:
-                await safe_publish(events, run_id, "approval.required", approval)
+                await safe_publish(events, run_id, "approval.required", approval, record=False)
         return waiting
     if outcome == "completed":
         async with session_factory() as db:

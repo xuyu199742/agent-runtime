@@ -1,4 +1,5 @@
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -22,7 +23,10 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
     try:
         async with factory() as db:
             model = ModelConfig(
-                name=f"client-model-{suffix}", provider="openai", model_name="private-model"
+                name=f"client-model-{suffix}",
+                provider="openai",
+                model_name="private-model",
+                config={"context_window": 32768, "max_output_tokens": 4096},
             )
             db.add(model)
             await db.flush()
@@ -91,14 +95,31 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 run = await db.get(Run, run_id)
                 spec = await db.get(ExecutionSpec, run.execution_spec_id)
                 assert spec.agent_revision == 1
-                assert spec.snapshot["system_prompt"] == "private-prompt"
+                assert spec.schema_version == 2
+                instruction = next(
+                    section["content"]
+                    for section in spec.snapshot["prompt"]["sections"]
+                    if section["name"] == "agent_instruction"
+                )
+                assert instruction == "private-prompt"
+                assert spec.snapshot["prompt"]["sections"][0]["content"]
                 assert spec.snapshot["model"]["model_name"] == "private-model"
                 agent_db = await db.get(AgentDefinition, agent.id)
                 agent_db.system_prompt = "changed-after-submit"
                 await db.commit()
             async with factory() as db:
-                preserved = await db.get(ExecutionSpec, run.execution_spec_id)
-                assert preserved.snapshot["system_prompt"] == "private-prompt"
+                persisted = await db.get(Run, run_id)
+                preserved = await db.get(ExecutionSpec, persisted.execution_spec_id)
+                preserved_instruction = next(
+                    section["content"]
+                    for section in preserved.snapshot["prompt"]["sections"]
+                    if section["name"] == "agent_instruction"
+                )
+                assert preserved_instruction == "private-prompt"
+                persisted.status = "RUNNING"
+                persisted.lease_owner = "worker-test"
+                persisted.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+                await db.commit()
             from app.worker import runner
 
             captured = {}
@@ -117,7 +138,7 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 async def run(self, *_args, **_kwargs):
                     return "ok"
 
-            async def no_publish(*_args):
+            async def no_publish(*_args, **_kwargs):
                 return None
 
             monkeypatch.setattr(runner, "session_factory", factory)
@@ -125,8 +146,8 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
             monkeypatch.setattr(runner, "build_model", lambda config: config.definition)
             monkeypatch.setattr(runner, "build_tools", lambda tools: tools)
             monkeypatch.setattr(runner, "safe_publish", no_publish)
-            assert await runner.run_agent(run_id, False, None, None, None) == "ok"
-            assert captured["system_prompt"] == "private-prompt"
+            assert await runner.run_agent(run_id, False, None, None, None, "worker-test") == "ok"
+            assert "private-prompt" in captured["system_prompt"]
             assert captured["model"].model_name == "private-model"
             assert (
                 await client.get(f"/api/v1/client/runs/{run_id}", headers=bob)

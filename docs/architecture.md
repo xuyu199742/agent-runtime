@@ -2,9 +2,9 @@
 
 ## 边界
 
-`transport` 负责 HTTP、Pydantic 和 SSE；`application` 负责业务规则；`domain` 保存业务状态与错误；`runtime` 集中 LangChain/LangGraph、模型、Context 与 Tool 组装；`persistence` 集中 SQLAlchemy 和粗粒度 Repository；`messaging` 集中 Redis Queue、事件与共享客户端；`worker` 分为 Run 执行范围、消费循环、checkpoint 清理与进程入口。Domain 不依赖框架，Application 不直接导入 ORM、SQLAlchemy 或 Redis。没有重新定义 LangChain 的基础类。
+`transport` 负责 HTTP、Pydantic 和 SSE；`application` 负责业务规则和 ExecutionSpec 构造；`context` 负责预算与首次上下文规划；`prompt` 负责提示词组装；`domain` 保存业务状态与错误；`runtime` 集中 LangChain/LangGraph、模型与 Tool 组装；`persistence` 集中 SQLAlchemy 和粗粒度 Repository；`messaging` 集中 Redis Queue、事件与共享客户端；`worker` 分为 Run 执行范围、上下文准备、消费循环、checkpoint 清理与进程入口。Domain 不依赖框架，Application 不直接导入 ORM、SQLAlchemy 或 Redis。没有重新定义 LangChain 的基础类。
 
-业务 Run 和 LangGraph thread 是不同层次。一个 Run 使用同 ID 的 checkpoint thread；Session 历史存 PostgreSQL，Context Builder 同时按消息数和近似 token 预算选取模型输入。系统提示词由 Agent 配置传给 `create_agent`，本次 ToolMessage 留在 LangGraph 执行状态里。
+业务 Run 和 LangGraph thread 是不同层次。一个 Run 使用同 ID 的 checkpoint thread；Session 历史存 PostgreSQL。新 Run 创建时冻结分层提示词和模型预算；Worker 首次模型调用前按预算选取历史、必要时生成 ConversationSummary，并提交 RunContextSnapshot。恢复时只读该快照；本次 ToolMessage 留在 LangGraph 执行状态里。旧 ExecutionSpec V1 Run 沿用原来的消息数量和近似 token 限额。详见 [V0.3 上下文规划](v03-context-planning.md)。
 
 服务只配置一个 `DATABASE_URL`：SQLAlchemy 使用其 `asyncpg` 驱动；LangGraph checkpointer 从同一 URL 派生 `psycopg` 驱动 URL。二者连接同一 PostgreSQL 数据库。
 
@@ -28,7 +28,7 @@ API 返回稳定的错误码（例如 `VALIDATION_ERROR`、`MODEL_ERROR`、`TIME
 
 当前 Tool factory 把数据库定义与代码实现组合：描述、超时和 HTTP 域名 policy 均参与生成最终 LangChain Tool。内置 Tool 无业务写入副作用；Runtime Tool Registry 提供 `tool_idempotency_key(run_id, tool_call_id)`。未来写入型 Tool 必须从运行上下文取这两个 ID，传给目标系统按键去重。租约取消无法撤回已发出的外部请求。
 
-本版只支持本地单用户开发。RAG、Memory、Skill、MCP、Workflow、可视化和 Go 网关均不在 V0.1 中。
+RAG、Memory、Skill、MCP、Workflow、可视化和 Go 网关不属于 V0.3 Phase 1 的上下文规划范围。
 
 ## 依赖接口参考
 

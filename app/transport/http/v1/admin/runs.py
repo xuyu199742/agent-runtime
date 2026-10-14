@@ -121,6 +121,18 @@ async def trace(
     }
 
 
+@router.get("/{run_id}/timeline")
+async def timeline(
+    run_id: str,
+    _user: Viewer,
+    runs: Runs,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    items, total = await runs.timeline(run_id, page, page_size)
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+
 @router.get("/{run_id}/artifacts")
 async def artifacts_for_run(
     run_id: str,

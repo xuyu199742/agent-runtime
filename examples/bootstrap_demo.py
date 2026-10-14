@@ -24,6 +24,7 @@ def main() -> None:
                 "model_name": model_name,
                 "base_url": base_url,
                 "api_key": os.getenv("AGENT_MODEL_API_KEY"),
+                "config": {"context_window": 32768, "max_output_tokens": 4096},
             },
         )
         model_response.raise_for_status()

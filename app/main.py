@@ -24,6 +24,7 @@ from app.transport.http.v1.admin import artifacts as admin_artifacts
 from app.transport.http.v1.admin import audit as admin_audit
 from app.transport.http.v1.admin import conversations as admin_conversations
 from app.transport.http.v1.admin import dashboard as admin_dashboard
+from app.transport.http.v1.admin import model_executions as admin_model_executions
 from app.transport.http.v1.admin import models as admin_models
 from app.transport.http.v1.admin import runs as admin_runs
 from app.transport.http.v1.admin import system as admin_system
@@ -155,6 +156,7 @@ for module in (
     admin_approvals,
     admin_artifacts,
     admin_models,
+    admin_model_executions,
     admin_tools,
     admin_workers,
     admin_conversations,

@@ -31,7 +31,12 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
         ) as client:
             model = await client.post(
                 "/api/models",
-                json={"name": f"model-{suffix}", "provider": "openai", "model_name": "test-model"},
+                json={
+                    "name": f"model-{suffix}",
+                    "provider": "openai",
+                    "model_name": "test-model",
+                    "config": {"context_window": 32768, "max_output_tokens": 4096},
+                },
             )
             assert model.status_code == 201, model.text
             secured = await client.post(
@@ -41,6 +46,7 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
                     "provider": "openai",
                     "model_name": "secure-model",
                     "api_key": "private-model-key",
+                    "config": {"context_window": 8192, "max_output_tokens": 1024},
                 },
             )
             assert secured.status_code == 201, secured.text
@@ -53,7 +59,12 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
                 assert decrypt_model_key(stored.api_key_encrypted) == "private-model-key"
             refreshed = await client.put(
                 f"/api/models/{secured.json()['id']}",
-                json={"name": f"secured-{suffix}", "provider": "openai", "model_name": "updated"},
+                json={
+                    "name": f"secured-{suffix}",
+                    "provider": "openai",
+                    "model_name": "updated",
+                    "config": {"context_window": 8192, "max_output_tokens": 1024},
+                },
             )
             assert refreshed.json()["has_api_key"] is True
             assert "api_key" not in (await client.get(f"/api/models/{secured.json()['id']}")).json()
@@ -65,6 +76,7 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
                     "provider": "openai",
                     "model_name": "updated",
                     "api_key": "rotated-key",
+                    "config": {"context_window": 8192, "max_output_tokens": 1024},
                 },
             )
             assert rotated.status_code == 200
@@ -80,6 +92,7 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
                         "provider": "openai",
                         "model_name": "test",
                         "api_key": "must-not-store",
+                        "config": {"context_window": 8192, "max_output_tokens": 1024},
                     },
                 )
                 assert unavailable.status_code == 503
@@ -98,11 +111,21 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
 
             spare_model = await client.post(
                 "/api/models",
-                json={"name": f"spare-{suffix}", "provider": "openai", "model_name": "first"},
+                json={
+                    "name": f"spare-{suffix}",
+                    "provider": "openai",
+                    "model_name": "first",
+                    "config": {"context_window": 8192, "max_output_tokens": 1024},
+                },
             )
             updated_model = await client.put(
                 f"/api/models/{spare_model.json()['id']}",
-                json={"name": f"spare-{suffix}", "provider": "openai", "model_name": "second"},
+                json={
+                    "name": f"spare-{suffix}",
+                    "provider": "openai",
+                    "model_name": "second",
+                    "config": {"context_window": 16384, "max_output_tokens": 2048},
+                },
             )
             assert updated_model.json()["model_name"] == "second"
             assert (

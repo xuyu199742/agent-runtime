@@ -8,13 +8,14 @@ from app.persistence.database import (
     AgentDefinition,
     ExecutionSpec,
     Message,
+    ModelExecution,
     Run,
     Session,
     ToolExecution,
     new_id,
 )
 from app.persistence.repositories.approvals import ApprovalRepository
-from app.persistence.repositories.traces import TraceRepository, trace_event
+from app.persistence.repositories.traces import ExecutionRecorder, TraceRepository
 
 LEASE_SECONDS = 45
 
@@ -50,6 +51,12 @@ class RunRepository:
 
     async def trace(self, run_id: str, page: int, page_size: int):
         return await TraceRepository(self.db).page(run_id, page, page_size)
+
+    async def timeline(self, run_id: str, page: int, page_size: int):
+        return await TraceRepository(self.db).timeline_page(run_id, page, page_size)
+
+    async def model_execution(self, execution_id: str):
+        return await self.db.get(ModelExecution, execution_id)
 
     async def active_for_worker(self, worker_id: str) -> list[str]:
         return list(
@@ -229,17 +236,18 @@ async def finish_run(db: AsyncSession, run_id: str, worker_id: str, answer: str)
         .values(
             status="COMPLETED",
             answer_message_id=answer_id,
+            trace_sequence=Run.trace_sequence + 1,
             lease_owner=None,
             lease_until=None,
             completed_at=datetime.now(UTC),
         )
-        .returning(Run.id)
+        .returning(Run.trace_sequence)
     )
-    updated = await db.scalar(statement)
-    if updated is None:
+    sequence = await db.scalar(statement)
+    if sequence is None:
         await db.rollback()
         return False
-    db.add(trace_event(run_id, "run.completed", {}))
+    ExecutionRecorder(db).add_at_sequence(run_id, sequence, "run.completed", {})
     await db.commit()
     return True
 
@@ -253,11 +261,17 @@ async def wait_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
             Run.lease_owner == worker_id,
             Run.lease_until > datetime.now(UTC),
         )
-        .values(status="WAITING", waiting_at=datetime.now(UTC), lease_owner=None, lease_until=None)
-        .returning(Run.id)
+        .values(
+            status="WAITING",
+            waiting_at=datetime.now(UTC),
+            lease_owner=None,
+            lease_until=None,
+            trace_sequence=Run.trace_sequence + 1,
+        )
+        .returning(Run.trace_sequence)
     )
     if updated is not None:
-        db.add(trace_event(run_id, "run.waiting", {}))
+        ExecutionRecorder(db).add_at_sequence(run_id, updated, "run.waiting", {})
     await db.commit()
     return updated is not None
 
@@ -278,18 +292,17 @@ async def end_run(
         .values(
             status=status,
             error_code=code,
+            trace_sequence=Run.trace_sequence + 1,
             lease_owner=None,
             lease_until=None,
             completed_at=datetime.now(UTC),
         )
-        .returning(Run.id)
+        .returning(Run.trace_sequence)
     )
     updated = await db.scalar(statement)
     if updated is not None:
-        db.add(
-            trace_event(
-                run_id, "run.failed" if status == "FAILED" else "run.cancelled", {"code": code}
-            )
+        ExecutionRecorder(db).add_at_sequence(
+            run_id, updated, "run.failed" if status == "FAILED" else "run.cancelled", {"code": code}
         )
     await db.commit()
     return updated is not None
@@ -299,12 +312,16 @@ async def cancel_pending(db: AsyncSession, run_id: str) -> bool:
     statement = (
         update(Run)
         .where(Run.id == run_id, Run.status == "PENDING")
-        .values(status="CANCELLED", completed_at=datetime.now(UTC))
-        .returning(Run.id)
+        .values(
+            status="CANCELLED",
+            completed_at=datetime.now(UTC),
+            trace_sequence=Run.trace_sequence + 1,
+        )
+        .returning(Run.trace_sequence)
     )
     updated = await db.scalar(statement)
     if updated is not None:
-        db.add(trace_event(run_id, "run.cancelled", {}))
+        ExecutionRecorder(db).add_at_sequence(run_id, updated, "run.cancelled", {})
     await db.commit()
     return updated is not None
 

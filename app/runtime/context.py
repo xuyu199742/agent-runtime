@@ -2,13 +2,10 @@ from collections.abc import Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from app.context.tokens import approximate_tokens
 from app.domain.session import ConversationTurn
 
-
-def approximate_tokens(content: str) -> int:
-    """保守估算上下文大小，避免超长输入进入模型；未来可替换为模型 tokenizer。"""
-    ascii_count = sum(char.isascii() for char in content)
-    return (ascii_count + 3) // 4 + (len(content) - ascii_count) * 2
+__all__ = ["approximate_tokens", "build_context"]
 
 
 def build_context(
