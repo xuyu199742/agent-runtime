@@ -74,6 +74,35 @@ class RunService:
             raise NotFound("Run 不存在")
         return await self.repository.trace(run_id, page, page_size)
 
+    async def timeline(self, run_id: str, page: int, page_size: int):
+        if await self.repository.get(run_id) is None:
+            raise NotFound("Run 不存在")
+        return await self.repository.timeline(run_id, page, page_size)
+
+    async def model_execution(self, execution_id: str):
+        row = await self.repository.model_execution(execution_id)
+        if row is None:
+            raise NotFound("ModelExecution 不存在")
+        return {
+            "id": row.id,
+            "run_id": row.run_id,
+            "step_id": row.step_id,
+            "attempt": row.attempt,
+            "phase": row.phase,
+            "provider": row.provider,
+            "model_name": row.model_name,
+            "input_hash": row.input_hash,
+            "input_messages": row.input_messages,
+            "output_message": row.output_message,
+            "tool_calls": row.tool_calls,
+            "usage": row.usage,
+            "finish_reason": row.finish_reason,
+            "status": row.status,
+            "error_code": row.error_code,
+            "started_at": row.started_at,
+            "completed_at": row.completed_at,
+        }
+
     async def retry(self, run_id: str):
         retry = await self.repository.retry(run_id)
         if retry is None:

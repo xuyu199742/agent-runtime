@@ -6,6 +6,7 @@ V0.2 API 统一使用 `/api/v1`：认证在 `/auth`，用户对话在 `/client`�
 
 V0.2 的配置快照、ToolExecution、审批恢复和 Retry 语义见 [docs/v02-runtime-contract.md](docs/v02-runtime-contract.md)。
 V0.3 Phase 1 的上下文规划、摘要与恢复边界见 [docs/v03-context-planning.md](docs/v03-context-planning.md)。
+V0.3 PR2 的持久模型调用事实和执行时间线见 [docs/v03-execution-timeline.md](docs/v03-execution-timeline.md)。
 
 管理后台位于 `web/admin`（本地端口 5173），用户对话客户端位于 [web/client](web/client/README.md)（本地端口 5174）。两个前端均通过 Vite 将 `/api` 转发到本地 API。分别在对应目录执行 `npm ci && npm run dev` 启动。
 

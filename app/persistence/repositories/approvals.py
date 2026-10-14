@@ -4,9 +4,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.context.errors import ContextLeaseLost
 from app.domain.errors import Conflict, NotFound
 from app.persistence.database import Approval, Run
-from app.persistence.repositories.traces import trace_event
+from app.persistence.repositories.traces import ExecutionRecorder
 
 
 class ApprovalRepository:
@@ -14,9 +15,20 @@ class ApprovalRepository:
         self.db = db
 
     async def ensure(
-        self, run_id: str, call_id: str, name: str, title: str, description: str, risk: str
+        self,
+        run_id: str,
+        call_id: str,
+        name: str,
+        title: str,
+        description: str,
+        risk: str,
+        *,
+        worker_id: str,
     ) -> Approval:
-        await self.db.execute(
+        recorder = ExecutionRecorder(self.db)
+        if not await recorder.owns_run(run_id, worker_id):
+            raise ContextLeaseLost
+        inserted_id = await self.db.scalar(
             insert(Approval)
             .values(
                 run_id=run_id,
@@ -28,10 +40,24 @@ class ApprovalRepository:
                 status="PENDING",
             )
             .on_conflict_do_nothing(index_elements=["run_id", "tool_call_id"])
+            .returning(Approval.id)
         )
         approval = await self.db.scalar(
             select(Approval).where(Approval.run_id == run_id, Approval.tool_call_id == call_id)
         )
+        if (
+            inserted_id is not None
+            and await recorder.append(
+                run_id,
+                "approval.required",
+                {"approval_id": approval.id, "tool_call_id": call_id, "name": name},
+                worker_id=worker_id,
+                ref_type="approval",
+                ref_id=approval.id,
+            )
+            is None
+        ):
+            raise ContextLeaseLost
         await self.db.commit()
         return approval
 
@@ -103,7 +129,8 @@ class ApprovalRepository:
             return False
         run.status = "CANCELLED"
         run.completed_at = datetime.now(UTC)
-        self.db.add(trace_event(run_id, "run.cancelled", {}))
+        run.trace_sequence += 1
+        ExecutionRecorder(self.db).add_at_sequence(run_id, run.trace_sequence, "run.cancelled", {})
         await self.db.execute(
             update(Approval)
             .where(Approval.run_id == run_id, Approval.status == "PENDING")

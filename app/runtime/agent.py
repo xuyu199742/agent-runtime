@@ -43,6 +43,8 @@ class LangChainAgentRuntime:
         run_id: str | None = None,
         tool_policies: dict | None = None,
         approval_session_factory=None,
+        model_call_journal=None,
+        worker_id: str | None = None,
     ) -> None:
         self.graph = create_agent(
             model=model,
@@ -50,8 +52,8 @@ class LangChainAgentRuntime:
             system_prompt=system_prompt,
             middleware=[
                 RunContextMiddleware(),
-                TracingMiddleware(),
-                ApprovalMiddleware(approval_session_factory, run_id, tool_policies),
+                TracingMiddleware(model_call_journal),
+                ApprovalMiddleware(approval_session_factory, run_id, tool_policies, worker_id),
                 ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
                 ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
             ],

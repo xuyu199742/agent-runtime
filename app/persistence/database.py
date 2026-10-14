@@ -261,6 +261,7 @@ class Run(Base):
     runtime_version: Mapped[str | None] = mapped_column(String(20))
     parent_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     attempt: Mapped[int] = mapped_column(Integer, default=1)
+    trace_sequence: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     origin: Mapped[str] = mapped_column(String(20), default="CLIENT")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     waiting_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -321,13 +322,45 @@ class Approval(Base):
 
 class RunTraceEvent(Base):
     __tablename__ = "run_trace_events"
-    __table_args__ = (Index("ix_run_trace_events_run_id_id", "run_id", "id"),)
+    __table_args__ = (
+        Index("ix_run_trace_events_run_id_id", "run_id", "id"),
+        UniqueConstraint("run_id", "sequence", name="uq_run_trace_run_sequence"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    sequence: Mapped[int] = mapped_column(Integer)
     event_type: Mapped[str] = mapped_column(String(50))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    ref_type: Mapped[str | None] = mapped_column(String(50))
+    ref_id: Mapped[str | None] = mapped_column(String(100))
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelExecution(Base):
+    __tablename__ = "model_executions"
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_id", "attempt", name="uq_model_execution_step_attempt"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    step_id: Mapped[str] = mapped_column(String(200))
+    attempt: Mapped[int] = mapped_column(Integer)
+    phase: Mapped[str] = mapped_column(String(40))
+    provider: Mapped[str] = mapped_column(String(40))
+    model_name: Mapped[str] = mapped_column(String(120))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    input_messages: Mapped[list] = mapped_column(JSONB)
+    output_message: Mapped[dict | None] = mapped_column(JSONB)
+    tool_calls: Mapped[list | None] = mapped_column(JSONB)
+    usage: Mapped[dict | None] = mapped_column(JSONB)
+    finish_reason: Mapped[str | None] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(20))
+    error_code: Mapped[str | None] = mapped_column(String(40))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Artifact(Base):

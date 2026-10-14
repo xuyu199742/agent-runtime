@@ -9,11 +9,16 @@ from app.persistence.repositories.approvals import ApprovalRepository
 
 class ApprovalMiddleware(AgentMiddleware):
     def __init__(
-        self, session_factory=None, run_id: str | None = None, policies: dict | None = None
+        self,
+        session_factory=None,
+        run_id: str | None = None,
+        policies: dict | None = None,
+        worker_id: str | None = None,
     ):
         self.session_factory = session_factory
         self.run_id = run_id
         self.policies = policies or {}
+        self.worker_id = worker_id
 
     async def awrap_tool_call(self, request, handler):
         call = request.tool_call
@@ -28,6 +33,7 @@ class ApprovalMiddleware(AgentMiddleware):
                 f"确认执行 {call['name']}",
                 policy.get("description", ""),
                 policy["policy"].get("approval_risk", "LOW"),
+                worker_id=self.worker_id,
             )
         accepted = interrupt(
             {
