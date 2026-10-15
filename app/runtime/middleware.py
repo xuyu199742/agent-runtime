@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 from app.context.errors import ContextLeaseLost
+from app.runtime.errors import ToolResultUnavailable
 
 log = structlog.get_logger()
 
@@ -67,7 +68,9 @@ class ToolErrorMiddleware(AgentMiddleware):
                 policy.get("effect_type", "READ_ONLY"),
                 args_hash,
             )
-            if record.status == "COMPLETED" and record.result_content is not None:
+            if record.status == "COMPLETED":
+                if record.result_content is None:
+                    raise ToolResultUnavailable("已完成的 Tool 调用缺少可重放结果")
                 return ToolMessage(
                     content=record.result_content, tool_call_id=call["id"], name=call["name"]
                 )

@@ -92,10 +92,16 @@ export function useChat() {
     stream.value = {
       ...stream.value,
       status: latest.status,
-      partial: latest.answer ?? stream.value.partial,
+      partial:
+        latest.status === "COMPLETED"
+          ? (latest.answer ?? stream.value.partial)
+          : isTerminal(latest.status)
+            ? ""
+            : stream.value.partial,
     };
     if (latest.status === "WAITING") await loadApprovals(runId);
     if (isTerminal(latest.status)) {
+      approvals.value = [];
       sessionStorage.removeItem(activeKey(latest.conversation_id));
       await Promise.all([loadMessages(), loadConversations(), loadArtifacts()]);
     }

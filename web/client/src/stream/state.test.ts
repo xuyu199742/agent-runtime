@@ -62,4 +62,40 @@ describe("run event reconstruction", () => {
     expect(state.status).toBe("WAITING");
     expect(state.hasApproval).toBe(true);
   });
+
+  it("clears pending approval and partial output after a recovery failure", () => {
+    let state = applyRunEvent(emptyRunState(), event("run.waiting", 1, {}));
+    state = applyRunEvent(state, event("approval.required", 2, {}));
+    state = applyRunEvent(
+      state,
+      event("model.started", 3, { step_id: "step" }),
+    );
+    state = applyRunEvent(
+      state,
+      event("model.delta", 4, { step_id: "step", text: "partial" }),
+    );
+    state = applyRunEvent(
+      state,
+      event("run.failed", 5, { code: "APPROVAL_RECOVERY_LOST" }),
+    );
+    expect(state.status).toBe("FAILED");
+    expect(state.hasApproval).toBe(false);
+    expect(state.partial).toBe("");
+  });
+
+  it("drops stale partial output when reconnect snapshot is terminal", () => {
+    let state = applyRunEvent(
+      emptyRunState(),
+      event("model.started", 1, { step_id: "step" }),
+    );
+    state = applyRunEvent(
+      state,
+      event("model.delta", 2, { step_id: "step", text: "old" }),
+    );
+    state = applyRunEvent(
+      state,
+      event("run.snapshot", 3, { status: "FAILED" }),
+    );
+    expect(state.partial).toBe("");
+  });
 });

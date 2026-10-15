@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,17 +101,26 @@ class ApprovalRepository:
         return approval.status == "APPROVED"
 
     async def decide(self, approval_id: str, actor_id: str, approve: bool) -> Approval:
+        run_id = await self.db.scalar(select(Approval.run_id).where(Approval.id == approval_id))
+        if run_id is None:
+            raise NotFound("Approval 不存在")
+        # 与 ensure/cancel_waiting 使用同一加锁顺序，避免审批和 Worker 相互死锁。
+        run = await self.db.get(Run, run_id, with_for_update=True)
         approval = await self.db.scalar(
             select(Approval).where(Approval.id == approval_id).with_for_update()
         )
-        if approval is None:
-            raise NotFound("Approval 不存在")
-        run = await self.db.get(Run, approval.run_id, with_for_update=True)
         if approval.status != "PENDING" or run.status != "WAITING":
             raise Conflict("Approval 已处理或 Run 不在等待状态")
         approval.status = "APPROVED" if approve else "REJECTED"
         approval.decided_by = actor_id
         approval.decided_at = datetime.now(UTC)
+        ExecutionRecorder(self.db).append_control_locked(
+            run,
+            "approval.approved" if approve else "approval.rejected",
+            {"approval_id": approval.id, "actor_id": actor_id},
+            ref_type="approval",
+            ref_id=approval.id,
+        )
         await self.db.flush()
         remaining = await self.db.scalar(
             select(func.count())
@@ -129,12 +138,25 @@ class ApprovalRepository:
             return False
         run.status = "CANCELLED"
         run.completed_at = datetime.now(UTC)
-        run.trace_sequence += 1
-        ExecutionRecorder(self.db).add_at_sequence(run_id, run.trace_sequence, "run.cancelled", {})
-        await self.db.execute(
-            update(Approval)
-            .where(Approval.run_id == run_id, Approval.status == "PENDING")
-            .values(status="CANCELLED", decided_at=datetime.now(UTC))
+        recorder = ExecutionRecorder(self.db)
+        pending = list(
+            await self.db.scalars(
+                select(Approval)
+                .where(Approval.run_id == run_id, Approval.status == "PENDING")
+                .order_by(Approval.id)
+                .with_for_update()
+            )
         )
+        for approval in pending:
+            approval.status = "CANCELLED"
+            approval.decided_at = datetime.now(UTC)
+            recorder.append_control_locked(
+                run,
+                "approval.cancelled",
+                {"approval_id": approval.id},
+                ref_type="approval",
+                ref_id=approval.id,
+            )
+        recorder.append_control_locked(run, "run.cancelled", {})
         await self.db.commit()
         return True
