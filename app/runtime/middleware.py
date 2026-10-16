@@ -7,7 +7,8 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 from app.context.errors import ContextLeaseLost
-from app.runtime.errors import ToolResultUnavailable
+from app.runtime.effects.executor import EffectExecutor
+from app.runtime.errors import ToolResultUnavailable, WriteNotAllowed
 
 log = structlog.get_logger()
 
@@ -110,6 +111,34 @@ class ToolErrorMiddleware(AgentMiddleware):
                     name=call["name"],
                     status="error",
                 )
+
+
+class EffectSafetyMiddleware(AgentMiddleware):
+    """仅拦截显式登记的外部写入，未知结果不交回模型继续执行。"""
+
+    def __init__(self, store=None, run_id=None, worker_id=None, policies=None, providers=None):
+        self.store = store
+        self.run_id = run_id
+        self.worker_id = worker_id
+        self.policies = policies or {}
+        self.providers = providers or {}
+
+    async def awrap_tool_call(self, request, handler):
+        call = request.tool_call
+        effect_type = self.policies.get(call["name"], {}).get("effect_type", "READ_ONLY")
+        if effect_type == "READ_ONLY":
+            return await handler(request)
+        if effect_type != "EXTERNAL_WRITE":
+            raise WriteNotAllowed("不支持的写入类型")
+        if self.policies[call["name"]].get("policy", {}).get("write_allowed") is not True:
+            raise WriteNotAllowed("写入 Tool 未获得显式授权")
+        provider = self.providers.get(call["name"])
+        if provider is None or self.store is None or self.run_id is None or self.worker_id is None:
+            raise WriteNotAllowed("写入 Tool 未配置受控 Effect Provider")
+        result = await EffectExecutor(self.store, provider).execute(
+            self.run_id, self.worker_id, call.get("args", {}), call_id=call["id"]
+        )
+        return ToolMessage(content=result, tool_call_id=call["id"], name=call["name"])
 
 
 class RunContextMiddleware(AgentMiddleware):

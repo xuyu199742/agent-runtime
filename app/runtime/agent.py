@@ -11,7 +11,12 @@ from langgraph.types import Command
 
 from app.runtime.approval import ApprovalMiddleware
 from app.runtime.errors import ApprovalRecoveryLost
-from app.runtime.middleware import RunContextMiddleware, ToolErrorMiddleware, TracingMiddleware
+from app.runtime.middleware import (
+    EffectSafetyMiddleware,
+    RunContextMiddleware,
+    ToolErrorMiddleware,
+    TracingMiddleware,
+)
 
 
 class RunContext(TypedDict, total=False):
@@ -53,6 +58,8 @@ class LangChainAgentRuntime:
         approval_session_factory=None,
         model_call_journal=None,
         worker_id: str | None = None,
+        effect_store=None,
+        effect_providers: dict | None = None,
     ) -> None:
         self.graph = create_agent(
             model=model,
@@ -62,6 +69,9 @@ class LangChainAgentRuntime:
                 RunContextMiddleware(),
                 TracingMiddleware(model_call_journal),
                 ApprovalMiddleware(approval_session_factory, run_id, tool_policies, worker_id),
+                EffectSafetyMiddleware(
+                    effect_store, run_id, worker_id, tool_policies, effect_providers
+                ),
                 ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
                 ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
             ],

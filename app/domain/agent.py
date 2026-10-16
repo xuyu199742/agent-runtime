@@ -18,3 +18,5 @@ class ToolDefinition:
     config: dict = field(default_factory=dict)
     policy: dict = field(default_factory=dict)
     enabled: bool = True
+    effect_type: str = "READ_ONLY"
+    failure_policy: str = "RETURN_ERROR"

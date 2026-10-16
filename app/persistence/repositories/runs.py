@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.errors import Conflict
 from app.persistence.database import (
     AgentDefinition,
+    EffectRecord,
     ExecutionSpec,
     Message,
     ModelExecution,
@@ -49,6 +50,12 @@ class RunRepository:
             ).all()
         )
 
+    async def effects_for_tool_executions(self, effect_ids: list[str]):
+        if not effect_ids:
+            return {}
+        rows = await self.db.scalars(select(EffectRecord).where(EffectRecord.id.in_(effect_ids)))
+        return {row.id: row for row in rows}
+
     async def trace(self, run_id: str, page: int, page_size: int):
         return await TraceRepository(self.db).page(run_id, page, page_size)
 
@@ -78,6 +85,19 @@ class RunRepository:
         )
         if original.status != "FAILED":
             raise Conflict("只有失败的 Run 可以重试")
+        unresolved_effect = await self.db.scalar(
+            select(EffectRecord.id)
+            .outerjoin(ToolExecution, ToolExecution.effect_id == EffectRecord.id)
+            .where(
+                or_(EffectRecord.origin_run_id == run_id, ToolExecution.run_id == run_id),
+                EffectRecord.status.in_(
+                    ["DISPATCHED", "UNCERTAIN", "RECONCILING", "MANUAL_REQUIRED"]
+                ),
+            )
+            .limit(1)
+        )
+        if unresolved_effect is not None:
+            raise Conflict("Run 存在未定案的外部写入，不能重试")
         active = await self.db.scalar(
             select(Run.id)
             .where(

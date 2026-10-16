@@ -67,7 +67,11 @@ class RunService:
     async def tool_executions(self, run_id: str):
         if await self.repository.get(run_id) is None:
             raise NotFound("Run 不存在")
-        return await self.repository.tool_executions(run_id)
+        rows = await self.repository.tool_executions(run_id)
+        effects = await self.repository.effects_for_tool_executions(
+            [row.effect_id for row in rows if row.effect_id]
+        )
+        return rows, effects
 
     async def trace(self, run_id: str, page: int, page_size: int):
         if await self.repository.get(run_id) is None:

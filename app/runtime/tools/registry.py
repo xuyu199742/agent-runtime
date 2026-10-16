@@ -40,6 +40,16 @@ def build_echo(description: str, timeout: float) -> BaseTool:
 NATIVE_FACTORIES = {"calculator": build_calculator, "echo": build_echo}
 
 
+def build_ticket_create(description: str) -> BaseTool:
+    async def invoke(ticket_key: str, title: str) -> str:
+        # EffectSafetyMiddleware 在调用此函数前接管受控写入。
+        raise ToolConfigurationError("ticket.create 缺少 Effect Safety 包装器")
+
+    return StructuredTool.from_function(
+        coroutine=invoke, name="ticket.create", description=description or "创建受控工单"
+    )
+
+
 def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
     server_allowed_hosts = {
         host.strip().lower()
@@ -60,6 +70,12 @@ def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
             raise ToolConfigurationError("Tool 超时配置无效")
         if definition.type == "NATIVE" and definition.name in NATIVE_FACTORIES:
             result.append(NATIVE_FACTORIES[definition.name](definition.description, float(timeout)))
+        elif (
+            definition.type == "NATIVE"
+            and definition.name == "ticket.create"
+            and definition.effect_type == "EXTERNAL_WRITE"
+        ):
+            result.append(build_ticket_create(definition.description))
         elif definition.type == "HTTP" and definition.name == "http_request":
             policy = definition.policy or {}
             requested_hosts = policy.get("allowed_hosts", config.get("allowed_hosts", []))

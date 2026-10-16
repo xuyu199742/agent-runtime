@@ -299,8 +299,40 @@ class ToolExecution(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     result_content: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(40))
+    effect_id: Mapped[str | None] = mapped_column(ForeignKey("effect_records.id"), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EffectRecord(Base):
+    __tablename__ = "effect_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_namespace", "operation_name", "business_key", name="uq_effect_identity"
+        ),
+        Index("ix_effect_records_origin_run_id", "origin_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider_namespace: Mapped[str] = mapped_column(String(200))
+    operation_name: Mapped[str] = mapped_column(String(100))
+    business_key: Mapped[str] = mapped_column(String(200))
+    contract_version: Mapped[int] = mapped_column(Integer)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20))
+    origin_run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    dispatch_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconcile_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    reconcile_worker_id: Mapped[str | None] = mapped_column(String(100))
+    external_ref: Mapped[str | None] = mapped_column(String(200))
+    result_content: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Approval(Base):
