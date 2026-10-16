@@ -19,6 +19,8 @@ def build_execution_spec(agent, model) -> ExecutionSpecDraft:
             config=getattr(tool, "config", None) or {},
             policy=getattr(tool, "policy", None) or {},
             enabled=getattr(tool, "enabled", True),
+            effect_type=getattr(tool, "effect_type", "READ_ONLY"),
+            failure_policy=getattr(tool, "failure_policy", "RETURN_ERROR"),
         )
         for tool in sorted(agent.tools, key=lambda item: getattr(item, "id", item.name))
     ]
@@ -55,7 +57,7 @@ def build_execution_spec(agent, model) -> ExecutionSpecDraft:
     return ExecutionSpecDraft(
         agent_id=agent.id,
         agent_revision=agent.revision,
-        schema_version=2,
+        schema_version=3 if any(tool["effect_type"] == "EXTERNAL_WRITE" for tool in tools) else 2,
         runtime_version=RUNTIME_VERSION,
         snapshot={
             "max_model_calls": agent.max_model_calls,

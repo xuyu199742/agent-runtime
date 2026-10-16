@@ -28,6 +28,15 @@ TRACE_TYPES = {
     "approval.rejected",
     "approval.cancelled",
     "artifact.created",
+    "effect.prepared",
+    "effect.dispatched",
+    "effect.succeeded",
+    "effect.failed",
+    "effect.uncertain",
+    "effect.reconciling",
+    "effect.manual_required",
+    "effect.reused",
+    "effect.idempotency_conflict",
 }
 TRACE_FIELDS = {"step_id", "tool_call_id", "name", "code", "approval_id", "artifact_id", "actor_id"}
 

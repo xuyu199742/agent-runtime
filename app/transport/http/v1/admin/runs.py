@@ -1,3 +1,4 @@
+import hashlib
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -81,7 +82,7 @@ async def execution_spec(run_id: str, _user: Viewer, runs: Runs):
 
 @router.get("/{run_id}/tool-executions")
 async def tool_executions(run_id: str, _user: Viewer, runs: Runs):
-    rows = await runs.tool_executions(run_id)
+    rows, effects = await runs.tool_executions(run_id)
     return [
         {
             "id": row.id,
@@ -95,6 +96,19 @@ async def tool_executions(run_id: str, _user: Viewer, runs: Runs):
             "error_code": row.error_code,
             "started_at": row.started_at,
             "completed_at": row.completed_at,
+            "effect": (
+                {
+                    "id": effects[row.effect_id].id,
+                    "status": effects[row.effect_id].status,
+                    "business_key_hash": hashlib.sha256(
+                        effects[row.effect_id].business_key.encode()
+                    ).hexdigest()[:16],
+                    "external_ref": effects[row.effect_id].external_ref,
+                    "error_code": effects[row.effect_id].error_code,
+                }
+                if row.effect_id in effects
+                else None
+            ),
         }
         for row in rows
     ]

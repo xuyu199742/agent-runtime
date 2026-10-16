@@ -32,6 +32,8 @@ class ResolvedExecutionConfig:
                 config=tool.get("config") or {},
                 policy=tool.get("policy") or {},
                 enabled=True,
+                effect_type=tool.get("effect_type", "READ_ONLY"),
+                failure_policy=tool.get("failure_policy", "RETURN_ERROR"),
             )
             for tool in self.tools
         ]
@@ -50,6 +52,8 @@ def resolve_execution_config(spec, agent, model, settings) -> ResolvedExecutionC
         return _from_v1(spec.snapshot)
     if spec.schema_version == 2:
         return _from_v2(spec.snapshot)
+    if spec.schema_version == 3:
+        return _from_v3(spec.snapshot)
     raise ValueError(f"不支持的 ExecutionSpec schema_version: {spec.schema_version}")
 
 
@@ -100,6 +104,23 @@ def _from_v2(snapshot: dict) -> ResolvedExecutionConfig:
         context_budget=dict(snapshot["context_budget"]),
         **_model_fields(snapshot["model"], enabled=True),
     )
+
+
+def _from_v3(snapshot: dict) -> ResolvedExecutionConfig:
+    config = _from_v2(snapshot)
+    for tool in config.tools:
+        if tool.get("effect_type") == "EXTERNAL_WRITE":
+            contract = (tool.get("config") or {}).get("effect_contract") or {}
+            if (
+                tool.get("name") != "ticket.create"
+                or contract.get("operation_name") != "ticket.create"
+                or not isinstance(contract.get("provider_namespace"), str)
+                or not contract["provider_namespace"]
+                or contract.get("contract_version") != 1
+                or (tool.get("policy") or {}).get("write_allowed") is not True
+            ):
+                raise ValueError("受控写入 Tool Contract 不完整")
+    return ResolvedExecutionConfig(**{**config.__dict__, "schema_version": 3})
 
 
 def _from_live_agent(agent, model, settings) -> ResolvedExecutionConfig:

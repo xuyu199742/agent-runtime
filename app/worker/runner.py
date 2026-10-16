@@ -28,18 +28,45 @@ from app.persistence.database import (
 )
 from app.persistence.repositories.approvals import ApprovalRepository
 from app.persistence.repositories.conversations import ConversationRepository
+from app.persistence.repositories.effects import EffectStore
 from app.persistence.repositories.runs import claim_run, end_run, extend_lease, finish_run, wait_run
 from app.persistence.repositories.tool_executions import ToolExecutionStore
 from app.persistence.repositories.traces import TRACE_TYPES, ExecutionRecorder
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
 from app.runtime.checkpoint import create_run_saver
 from app.runtime.context import build_context
+from app.runtime.effects.ticket import TicketCreateProvider
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
 from app.worker.context_planning import prepare_v2_messages
 from app.worker.model_recording import ModelCallJournal
 
 log = structlog.get_logger()
+
+
+def build_effect_providers(config, settings) -> dict:
+    providers = {}
+    for tool in config.tools:
+        if tool.get("effect_type", "READ_ONLY") == "READ_ONLY":
+            continue
+        if config.schema_version != 3 or tool.get("name") != "ticket.create":
+            raise ToolConfigurationError("ExecutionSpec 未冻结受控写入 Contract")
+        contract = (tool.get("config") or {}).get("effect_contract") or {}
+        if (
+            contract.get("operation_name") != "ticket.create"
+            or contract.get("contract_version") != 1
+            or not contract.get("provider_namespace")
+            or (tool.get("policy") or {}).get("write_allowed") is not True
+            or not settings.ticket_service_base_url
+            or not settings.ticket_service_token
+        ):
+            raise ToolConfigurationError("ticket.create 缺少受控 Contract 或服务配置")
+        providers["ticket.create"] = TicketCreateProvider(
+            contract["provider_namespace"],
+            settings.ticket_service_base_url,
+            settings.ticket_service_token,
+        )
+    return providers
 
 
 class CoordinationLost(Exception):
@@ -226,6 +253,8 @@ async def run_agent(
         approval_session_factory=session_factory,
         model_call_journal=journal,
         worker_id=worker_id,
+        effect_store=EffectStore(session_factory) if worker_id else None,
+        effect_providers=build_effect_providers(config, get_settings()),
     )
 
     approval_decisions = None
