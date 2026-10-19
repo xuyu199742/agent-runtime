@@ -23,7 +23,8 @@ def upgrade() -> None:
         "agents", sa.Column("max_external_writes", sa.Integer(), nullable=False, server_default="0")
     )
     op.add_column(
-        "agents", sa.Column("max_duration_seconds", sa.Integer(), nullable=False, server_default="3600")
+        "agents",
+        sa.Column("max_duration_seconds", sa.Integer(), nullable=False, server_default="3600"),
     )
 
 
