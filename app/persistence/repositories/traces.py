@@ -6,6 +6,7 @@ from sqlalchemy import func, select, update
 
 from app.execution.model_serialization import model_input_hash
 from app.persistence.database import ModelExecution, Run, RunTraceEvent, ToolExecution, new_id
+from app.runtime.budget import BudgetModelCallsExceeded, check_deadline
 
 TRACE_TYPES = {
     "run.started",
@@ -29,6 +30,7 @@ TRACE_TYPES = {
     "approval.cancelled",
     "artifact.created",
     "policy.denied",
+    "budget.exceeded",
     "effect.prepared",
     "effect.dispatched",
     "effect.succeeded",
@@ -49,6 +51,11 @@ TRACE_FIELDS = {
     "actor_id",
     "reason_code",
     "effect_type",
+    "dimension",
+    "limit",
+    "used",
+    "deadline_at",
+    "now",
 }
 
 
@@ -157,9 +164,13 @@ class ExecutionRecorder:
         provider: str,
         model_name: str,
         input_messages: list[dict],
+        budget=None,
     ) -> ModelExecution | None:
         if not await self.owns_run(run_id, worker_id):
             return None
+        if budget is not None:
+            run = await self.db.get(Run, run_id)
+            check_deadline(run.created_at, budget.max_duration_seconds)
         previous = await self.db.scalar(
             select(ModelExecution)
             .where(ModelExecution.run_id == run_id, ModelExecution.step_id == step_id)
@@ -167,6 +178,14 @@ class ExecutionRecorder:
             .limit(1)
             .with_for_update()
         )
+        if budget is not None and phase == "AGENT" and previous is None:
+            used = await self.db.scalar(
+                select(func.count(func.distinct(ModelExecution.step_id))).where(
+                    ModelExecution.run_id == run_id, ModelExecution.phase == "AGENT"
+                )
+            )
+            if used >= budget.max_model_calls:
+                raise BudgetModelCallsExceeded(budget.max_model_calls, used)
         if previous is not None and previous.status == "STARTED":
             previous.status = "ABANDONED"
             previous.error_code = "WORKER_LOST"

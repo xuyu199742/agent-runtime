@@ -200,6 +200,9 @@ class CatalogRepository:
                             "system_prompt",
                             "model_id",
                             "max_model_calls",
+                            "max_tool_calls",
+                            "max_external_writes",
+                            "max_duration_seconds",
                             "enabled",
                         )
                     },

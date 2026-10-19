@@ -297,7 +297,12 @@ async def wait_run(db: AsyncSession, run_id: str, worker_id: str) -> bool:
 
 
 async def end_run(
-    db: AsyncSession, run_id: str, worker_id: str, status: str, code: str | None = None
+    db: AsyncSession,
+    run_id: str,
+    worker_id: str,
+    status: str,
+    code: str | None = None,
+    budget_event: dict | None = None,
 ) -> bool:
     if status not in {"FAILED", "CANCELLED"}:
         raise ValueError("无效的终态")
@@ -312,7 +317,7 @@ async def end_run(
         .values(
             status=status,
             error_code=code,
-            trace_sequence=Run.trace_sequence + 1,
+            trace_sequence=Run.trace_sequence + (2 if budget_event is not None else 1),
             lease_owner=None,
             lease_until=None,
             completed_at=datetime.now(UTC),
@@ -321,6 +326,10 @@ async def end_run(
     )
     updated = await db.scalar(statement)
     if updated is not None:
+        if budget_event is not None:
+            ExecutionRecorder(db).add_at_sequence(
+                run_id, updated - 1, "budget.exceeded", budget_event
+            )
         ExecutionRecorder(db).add_at_sequence(
             run_id, updated, "run.failed" if status == "FAILED" else "run.cancelled", {"code": code}
         )

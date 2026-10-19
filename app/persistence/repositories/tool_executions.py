@@ -2,18 +2,20 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.context.errors import ContextLeaseLost
-from app.persistence.database import ToolExecution
+from app.persistence.database import Run, ToolExecution
 from app.persistence.repositories.traces import ExecutionRecorder
+from app.runtime.budget import BudgetToolCallsExceeded, check_deadline
 
 
 class ToolExecutionStore:
-    def __init__(self, session_factory, worker_id: str):
+    def __init__(self, session_factory, worker_id: str, budget=None):
         self.session_factory = session_factory
         self.worker_id = worker_id
+        self.budget = budget
 
     async def start(
         self, run_id: str, call_id: str, name: str, effect_type: str, args_hash: str
@@ -22,25 +24,40 @@ class ToolExecutionStore:
             recorder = ExecutionRecorder(db)
             if not await recorder.owns_run(run_id, self.worker_id):
                 raise ContextLeaseLost
-            await db.execute(
-                insert(ToolExecution)
-                .values(
-                    run_id=run_id,
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    effect_type=effect_type,
-                    idempotency_key=f"{run_id}:{call_id}",
-                    args_hash=args_hash,
-                    status="STARTED",
-                    attempt=0,
-                )
-                .on_conflict_do_nothing(index_elements=["run_id", "tool_call_id"])
-            )
             row = await db.scalar(
                 select(ToolExecution)
                 .where(ToolExecution.run_id == run_id, ToolExecution.tool_call_id == call_id)
                 .with_for_update()
             )
+            if self.budget is not None:
+                run = await db.get(Run, run_id)
+                check_deadline(run.created_at, self.budget.max_duration_seconds)
+            if row is None:
+                if self.budget is not None:
+                    used = await db.scalar(
+                        select(func.count(ToolExecution.id)).where(ToolExecution.run_id == run_id)
+                    )
+                    if used >= self.budget.max_tool_calls:
+                        raise BudgetToolCallsExceeded(self.budget.max_tool_calls, used)
+                await db.execute(
+                    insert(ToolExecution)
+                    .values(
+                        run_id=run_id,
+                        tool_call_id=call_id,
+                        tool_name=name,
+                        effect_type=effect_type,
+                        idempotency_key=f"{run_id}:{call_id}",
+                        args_hash=args_hash,
+                        status="STARTED",
+                        attempt=0,
+                    )
+                    .on_conflict_do_nothing(index_elements=["run_id", "tool_call_id"])
+                )
+                row = await db.scalar(
+                    select(ToolExecution)
+                    .where(ToolExecution.run_id == run_id, ToolExecution.tool_call_id == call_id)
+                    .with_for_update()
+                )
             if row.tool_name != name or row.args_hash != args_hash:
                 raise ValueError("Tool Call ID 与既有参数不一致")
             if row.status != "COMPLETED":

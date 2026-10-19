@@ -31,7 +31,12 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
             db.add(model)
             await db.flush()
             agent = AgentDefinition(
-                name=f"client-agent-{suffix}", model_id=model.id, system_prompt="private-prompt"
+                name=f"client-agent-{suffix}",
+                model_id=model.id,
+                system_prompt="private-prompt",
+                max_tool_calls=2,
+                max_external_writes=1,
+                max_duration_seconds=120,
             )
             db.add(agent)
             db.add_all(
@@ -95,7 +100,7 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 run = await db.get(Run, run_id)
                 spec = await db.get(ExecutionSpec, run.execution_spec_id)
                 assert spec.agent_revision == 1
-                assert spec.schema_version == 2
+                assert spec.schema_version == 4
                 instruction = next(
                     section["content"]
                     for section in spec.snapshot["prompt"]["sections"]
@@ -104,12 +109,24 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 assert instruction == "private-prompt"
                 assert spec.snapshot["prompt"]["sections"][0]["content"]
                 assert spec.snapshot["model"]["model_name"] == "private-model"
+                assert spec.snapshot["execution_budget"] == {
+                    "max_model_calls": 10,
+                    "max_tool_calls": 2,
+                    "max_external_writes": 1,
+                    "max_duration_seconds": 120,
+                }
                 agent_db = await db.get(AgentDefinition, agent.id)
                 agent_db.system_prompt = "changed-after-submit"
+                agent_db.max_tool_calls = 100
+                agent_db.max_external_writes = 100
+                agent_db.max_duration_seconds = 3600
                 await db.commit()
             async with factory() as db:
                 persisted = await db.get(Run, run_id)
                 preserved = await db.get(ExecutionSpec, persisted.execution_spec_id)
+                assert preserved.snapshot["execution_budget"]["max_tool_calls"] == 2
+                assert preserved.snapshot["execution_budget"]["max_external_writes"] == 1
+                assert preserved.snapshot["execution_budget"]["max_duration_seconds"] == 120
                 preserved_instruction = next(
                     section["content"]
                     for section in preserved.snapshot["prompt"]["sections"]
@@ -133,6 +150,8 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                         tools=tools,
                         system_prompt=system_prompt,
                         max_model_calls=max_model_calls,
+                        tool_budget=_kwargs["tool_execution_store"].budget,
+                        effect_budget=_kwargs["effect_store"].budget,
                     )
 
                 async def run(self, *_args, **_kwargs):
@@ -149,6 +168,8 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
             assert await runner.run_agent(run_id, False, None, None, None, "worker-test") == "ok"
             assert "private-prompt" in captured["system_prompt"]
             assert captured["model"].model_name == "private-model"
+            assert captured["tool_budget"].max_tool_calls == 2
+            assert captured["effect_budget"].max_external_writes == 1
             assert (
                 await client.get(f"/api/v1/client/runs/{run_id}", headers=bob)
             ).status_code == 404
