@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 
 from app.domain.agent import ToolDefinition as RuntimeToolDefinition
+from app.domain.budget import (
+    DEFAULT_MAX_DURATION_SECONDS,
+    DEFAULT_MAX_EXTERNAL_WRITES,
+    DEFAULT_MAX_TOOL_CALLS,
+)
 from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.persistence.repositories.catalog import CatalogRepository
 from app.runtime.tools import build_tools
@@ -15,6 +20,9 @@ class AgentInput:
     max_model_calls: int
     enabled: bool
     tool_ids: list[str]
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
+    max_external_writes: int = DEFAULT_MAX_EXTERNAL_WRITES
+    max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS
 
 
 class CatalogService:
@@ -41,6 +49,9 @@ class CatalogService:
                 "system_prompt",
                 "model_id",
                 "max_model_calls",
+                "max_tool_calls",
+                "max_external_writes",
+                "max_duration_seconds",
                 "enabled",
             )
         }
@@ -178,6 +189,9 @@ def agent_out(agent) -> dict:
         "system_prompt",
         "model_id",
         "max_model_calls",
+        "max_tool_calls",
+        "max_external_writes",
+        "max_duration_seconds",
         "revision",
         "enabled",
         "created_at",

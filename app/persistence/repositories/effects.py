@@ -2,19 +2,25 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.context.errors import ContextLeaseLost
 from app.persistence.database import EffectRecord, Run, ToolExecution, new_id
 from app.persistence.repositories.traces import ExecutionRecorder
+from app.runtime.budget import (
+    BudgetExternalWritesExceeded,
+    BudgetToolCallsExceeded,
+    check_deadline,
+)
 from app.runtime.effects.state import EffectStatus, transition
 from app.runtime.errors import EffectIdempotencyConflictError, EffectResultUnavailable
 
 
 class EffectStore:
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, budget=None):
         self.session_factory = session_factory
+        self.budget = budget
 
     async def get(self, effect_id: str) -> EffectRecord:
         async with self.session_factory() as db:
@@ -66,7 +72,25 @@ class EffectStore:
                 raise RuntimeError("Effect 写入后未找到记录")
             if row.contract_version != contract_version or row.request_hash != request_hash:
                 raise EffectIdempotencyConflictError("相同业务键对应不同写入请求")
+            if self.budget is not None and row.status not in {
+                EffectStatus.DISPATCHED,
+                EffectStatus.UNCERTAIN,
+                EffectStatus.RECONCILING,
+            }:
+                run = await db.get(Run, run_id)
+                check_deadline(run.created_at, self.budget.max_duration_seconds)
             if call_id is not None:
+                existing_call = await db.scalar(
+                    select(ToolExecution.id).where(
+                        ToolExecution.run_id == run_id, ToolExecution.tool_call_id == call_id
+                    )
+                )
+                if existing_call is None and self.budget is not None:
+                    used = await db.scalar(
+                        select(func.count(ToolExecution.id)).where(ToolExecution.run_id == run_id)
+                    )
+                    if used >= self.budget.max_tool_calls:
+                        raise BudgetToolCallsExceeded(self.budget.max_tool_calls, used)
                 created_call = await db.scalar(
                     insert(ToolExecution)
                     .values(
@@ -192,6 +216,16 @@ class EffectStore:
                 raise ValueError("Effect 不存在")
             if row.status != EffectStatus.PREPARED:
                 return False
+            if self.budget is not None:
+                run = await db.get(Run, run_id)
+                check_deadline(run.created_at, self.budget.max_duration_seconds)
+                used = await db.scalar(
+                    select(func.count(EffectRecord.id)).where(
+                        EffectRecord.dispatch_run_id == run_id
+                    )
+                )
+                if used >= self.budget.max_external_writes:
+                    raise BudgetExternalWritesExceeded(self.budget.max_external_writes, used)
             row.status = transition(EffectStatus(row.status), "dispatch")
             row.dispatch_run_id = run_id
             row.dispatch_worker_id = worker_id

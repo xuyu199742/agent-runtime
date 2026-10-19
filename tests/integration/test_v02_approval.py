@@ -1,4 +1,5 @@
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -33,9 +34,12 @@ class ApprovalModel(FakeMessagesListChatModel):
         return self
 
 
-@pytest.mark.parametrize("approve,drop_checkpoint", [(True, False), (False, False), (True, True)])
+@pytest.mark.parametrize(
+    "approve,drop_checkpoint,deadline_expired",
+    [(True, False, False), (False, False, False), (True, True, False), (True, False, True)],
+)
 async def test_tool_approval_waits_then_resumes_from_checkpoint(
-    monkeypatch, approve, drop_checkpoint
+    monkeypatch, approve, drop_checkpoint, deadline_expired
 ):
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -120,6 +124,11 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(
 
             async with factory() as db:
                 await ApprovalRepository(db).decide(approval_id, "approval-user", approve)
+            if deadline_expired:
+                async with factory() as db:
+                    run = await db.get(Run, run_id)
+                    run.created_at = datetime.now(UTC) - timedelta(hours=2)
+                    await db.commit()
             if drop_checkpoint:
                 await saver.adelete_thread(run_id)
             await queue.enqueue(run_id)
@@ -150,6 +159,13 @@ async def test_tool_approval_waits_then_resumes_from_checkpoint(
                 assert run.status == "FAILED"
                 assert run.error_code == "APPROVAL_RECOVERY_LOST"
                 assert execution is None
+                return
+            if deadline_expired:
+                assert run.status == "FAILED"
+                assert run.error_code == "RUN_DEADLINE_EXCEEDED"
+                assert execution is None
+                assert any(row.event_type == "budget.exceeded" for row in timeline)
+                assert (await db.get(Approval, approval_id)).status == "APPROVED"
                 return
             assert run.status == "COMPLETED"
             if approve:

@@ -144,9 +144,19 @@ async def test_catalog_session_and_message_idempotence(monkeypatch):
                     await client.delete(f"/api/tools/{spare_tool.json()['id']}")
                 ).status_code == 204
             agent = await client.post(
-                "/api/agents", json={"name": f"agent-{suffix}", "model_id": model.json()["id"]}
+                "/api/agents",
+                json={
+                    "name": f"agent-{suffix}",
+                    "model_id": model.json()["id"],
+                    "max_tool_calls": 7,
+                    "max_external_writes": 1,
+                    "max_duration_seconds": 600,
+                },
             )
             assert agent.status_code == 201, agent.text
+            assert agent.json()["max_tool_calls"] == 7
+            assert agent.json()["max_external_writes"] == 1
+            assert agent.json()["max_duration_seconds"] == 600
             spare_agent = await client.post(
                 "/api/agents",
                 json={"name": f"spare-agent-{suffix}", "model_id": model.json()["id"]},

@@ -9,13 +9,20 @@ from app.persistence.repositories.traces import ExecutionRecorder
 
 class ModelCallJournal:
     def __init__(
-        self, session_factory, run_id: str, worker_id: str, provider: str, model_name: str
+        self,
+        session_factory,
+        run_id: str,
+        worker_id: str,
+        provider: str,
+        model_name: str,
+        budget=None,
     ) -> None:
         self.session_factory = session_factory
         self.run_id = run_id
         self.worker_id = worker_id
         self.provider = provider
         self.model_name = model_name
+        self.budget = budget
 
     async def start(self, step_id: str, phase: str, messages: list[BaseMessage]) -> str:
         async with self.session_factory() as db:
@@ -27,6 +34,7 @@ class ModelCallJournal:
                 provider=self.provider,
                 model_name=self.model_name,
                 input_messages=serialize_model_input(messages),
+                budget=self.budget,
             )
             if row is None:
                 raise ContextLeaseLost
