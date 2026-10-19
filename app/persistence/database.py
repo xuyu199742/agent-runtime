@@ -20,6 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.config import get_settings
+from app.domain.budget import (
+    DEFAULT_MAX_DURATION_SECONDS,
+    DEFAULT_MAX_EXTERNAL_WRITES,
+    DEFAULT_MAX_MODEL_CALLS,
+    DEFAULT_MAX_TOOL_CALLS,
+)
 from app.domain.entities import RunStatus
 
 
@@ -190,7 +196,10 @@ class AgentDefinition(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     model_id: Mapped[str] = mapped_column(ForeignKey("model_configs.id"))
-    max_model_calls: Mapped[int] = mapped_column(Integer, default=10)
+    max_model_calls: Mapped[int] = mapped_column(Integer, default=DEFAULT_MAX_MODEL_CALLS)
+    max_tool_calls: Mapped[int] = mapped_column(Integer, default=DEFAULT_MAX_TOOL_CALLS)
+    max_external_writes: Mapped[int] = mapped_column(Integer, default=DEFAULT_MAX_EXTERNAL_WRITES)
+    max_duration_seconds: Mapped[int] = mapped_column(Integer, default=DEFAULT_MAX_DURATION_SECONDS)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

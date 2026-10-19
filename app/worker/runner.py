@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
@@ -20,10 +21,12 @@ from app.messaging.events import EventStore
 from app.messaging.run_queue import RunQueue
 from app.persistence.database import (
     AgentDefinition,
+    EffectRecord,
     ExecutionSpec,
     ModelConfig,
     Run,
     Session,
+    ToolExecution,
     session_factory,
 )
 from app.persistence.repositories.approvals import ApprovalRepository
@@ -33,6 +36,7 @@ from app.persistence.repositories.runs import claim_run, end_run, extend_lease, 
 from app.persistence.repositories.tool_executions import ToolExecutionStore
 from app.persistence.repositories.traces import TRACE_TYPES, ExecutionRecorder
 from app.runtime.agent import LangChainAgentRuntime, RunCancelled, RunWaiting
+from app.runtime.budget import BudgetLimitExceeded, RunDeadlineExceeded, check_deadline
 from app.runtime.checkpoint import create_run_saver
 from app.runtime.context import build_context
 from app.runtime.effects.ticket import TicketCreateProvider
@@ -49,7 +53,7 @@ def build_effect_providers(config, settings) -> dict:
     for tool in config.tools:
         if tool.get("effect_type", "READ_ONLY") == "READ_ONLY":
             continue
-        if config.schema_version != 3 or tool.get("name") != "ticket.create":
+        if config.schema_version not in {3, 4} or tool.get("name") != "ticket.create":
             raise ToolConfigurationError("ExecutionSpec 未冻结受控写入 Contract")
         contract = (tool.get("config") or {}).get("effect_contract") or {}
         if (
@@ -77,7 +81,7 @@ def classify_run_error(exc: Exception) -> str:
     if isinstance(exc, ContextRunError):
         return exc.code
     if isinstance(exc, ModelCallLimitExceededError):
-        return "VALIDATION_ERROR"
+        return "BUDGET_MODEL_CALLS_EXCEEDED"
     if isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
         return "TIMEOUT"
     if isinstance(exc, ToolConfigurationError):
@@ -192,7 +196,14 @@ async def run_agent(
     )
 
     journal = (
-        ModelCallJournal(session_factory, run_id, worker_id, config.provider, config.model_name)
+        ModelCallJournal(
+            session_factory,
+            run_id,
+            worker_id,
+            config.provider,
+            config.model_name,
+            config.execution_budget,
+        )
         if worker_id is not None
         else None
     )
@@ -247,17 +258,40 @@ async def run_agent(
         checkpointer=create_run_saver(saver.conn, run_id, worker_id)
         if worker_id and saver is not None
         else saver,
-        tool_execution_store=ToolExecutionStore(session_factory, worker_id),
+        tool_execution_store=ToolExecutionStore(
+            session_factory, worker_id, config.execution_budget
+        ),
         run_id=run_id,
         tool_policies={tool["name"]: tool for tool in config.tools},
         approval_session_factory=session_factory,
         model_call_journal=journal,
         worker_id=worker_id,
-        effect_store=EffectStore(session_factory) if worker_id else None,
+        effect_store=EffectStore(session_factory, config.execution_budget) if worker_id else None,
         effect_providers=build_effect_providers(config, get_settings()),
     )
 
     approval_decisions = None
+    if config.execution_budget is not None:
+        try:
+            check_deadline(run.created_at, config.execution_budget.max_duration_seconds)
+        except RunDeadlineExceeded:
+            # 已发送的写入必须先核对结果；后续模型与新调用仍各自受截止时间限制。
+            async with session_factory() as db:
+                unresolved = await db.scalar(
+                    select(EffectRecord.id)
+                    .outerjoin(ToolExecution, ToolExecution.effect_id == EffectRecord.id)
+                    .where(
+                        or_(
+                            EffectRecord.origin_run_id == run_id,
+                            EffectRecord.dispatch_run_id == run_id,
+                            ToolExecution.run_id == run_id,
+                        ),
+                        EffectRecord.status.in_(["DISPATCHED", "UNCERTAIN", "RECONCILING"]),
+                    )
+                    .limit(1)
+                )
+            if unresolved is None:
+                raise
     if resumed:
         try:
             interrupts = await runtime.inspect_interrupts(
@@ -380,9 +414,19 @@ async def execute_run(
         return cancelled
     if outcome == "failed" and error is not None:
         code = classify_run_error(error)
+        if isinstance(error, (BudgetLimitExceeded, RunDeadlineExceeded)):
+            budget_event = error.event_data()
+        elif isinstance(error, ModelCallLimitExceededError):
+            budget_event = {
+                "dimension": "model_calls",
+                "limit": error.run_limit,
+                "used": error.run_count,
+            }
+        else:
+            budget_event = None
         log.error("Run 执行失败", run_id=run_id, error_type=type(error).__name__)
         async with session_factory() as db:
-            failed = await end_run(db, run_id, worker_id, "FAILED", code)
+            failed = await end_run(db, run_id, worker_id, "FAILED", code, budget_event)
         if failed:
             await safe_publish(events, run_id, "run.failed", {"code": code})
         return failed

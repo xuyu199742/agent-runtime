@@ -3,6 +3,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.budget import (
+    DEFAULT_MAX_DURATION_SECONDS,
+    DEFAULT_MAX_EXTERNAL_WRITES,
+    DEFAULT_MAX_MODEL_CALLS,
+    DEFAULT_MAX_TOOL_CALLS,
+)
+
 
 class Out(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -117,7 +124,10 @@ class AgentIn(BaseModel):
     description: str = ""
     system_prompt: str = ""
     model_id: str
-    max_model_calls: int = Field(default=10, ge=1, le=100)
+    max_model_calls: int = Field(default=DEFAULT_MAX_MODEL_CALLS, ge=1, le=100)
+    max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, ge=1, le=1000)
+    max_external_writes: int = Field(default=DEFAULT_MAX_EXTERNAL_WRITES, ge=0, le=100)
+    max_duration_seconds: int = Field(default=DEFAULT_MAX_DURATION_SECONDS, ge=1, le=86400)
     enabled: bool = True
     tool_ids: list[str] = Field(default_factory=list)
 
@@ -129,6 +139,9 @@ class AgentOut(Out):
     system_prompt: str
     model_id: str
     max_model_calls: int
+    max_tool_calls: int
+    max_external_writes: int
+    max_duration_seconds: int
     enabled: bool
     tool_ids: list[str]
     created_at: datetime
