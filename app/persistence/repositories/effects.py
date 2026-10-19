@@ -194,6 +194,7 @@ class EffectStore:
                 return False
             row.status = transition(EffectStatus(row.status), "dispatch")
             row.dispatch_run_id = run_id
+            row.dispatch_worker_id = worker_id
             row.dispatched_at = datetime.now(UTC)
             if (
                 await recorder.append(

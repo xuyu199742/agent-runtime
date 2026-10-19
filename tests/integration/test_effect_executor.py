@@ -1,5 +1,7 @@
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -12,10 +14,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.context.errors import ContextLeaseLost
 from app.persistence.database import (
     AgentDefinition,
+    Approval,
     EffectRecord,
     Message,
     ModelConfig,
     Run,
+    RunTraceEvent,
     Session,
     ToolExecution,
 )
@@ -23,7 +27,8 @@ from app.persistence.repositories.effects import EffectStore
 from app.runtime.agent import LangChainAgentRuntime
 from app.runtime.effects.contract import EffectIdentity, EffectObservation
 from app.runtime.effects.executor import EffectExecutor
-from app.runtime.errors import EffectManualRequired, EffectNotApplied
+from app.runtime.errors import EffectManualRequired, EffectNotApplied, EffectUncertain, PolicyDenied
+from app.runtime.middleware import PolicyMiddleware
 
 
 async def _running_run(factory, worker_id):
@@ -433,6 +438,149 @@ async def test_reconcile_can_be_taken_over_after_same_run_changes_worker():
         with pytest.raises(ContextLeaseLost):
             await store.advance(
                 effect.id, run_id, "worker-a", "observed_success", result_content="stale"
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_same_run_same_call_concurrent_entry_never_dispatches_twice():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    provider = FakeTicketProvider()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    args = {"ticket_key": f"warning-{uuid4().hex}", "request_hash": "4" * 64}
+
+    async def slow_invoke(_args, business_key):
+        provider.calls += 1
+        entered.set()
+        await release.wait()
+        provider.ledger[business_key] = '{"ticket_id":"T-1"}'
+        return EffectObservation.succeeded(provider.ledger[business_key], "T-1")
+
+    provider.invoke = slow_invoke
+    try:
+        run_id = await _running_run(factory, "worker-a")
+        executor = EffectExecutor(EffectStore(factory), provider)
+        first = asyncio.create_task(executor.execute(run_id, "worker-a", args, call_id="same-call"))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        with pytest.raises(EffectUncertain):
+            await executor.execute(run_id, "worker-a", args, call_id="same-call")
+        assert provider.calls == 1
+        release.set()
+        assert await first == '{"ticket_id":"T-1"}'
+    finally:
+        release.set()
+        await engine.dispose()
+
+
+async def test_rejected_write_approval_creates_no_effect_or_provider_request(monkeypatch):
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    provider = FakeTicketProvider()
+    args = {"ticket_key": f"warning-{uuid4().hex}", "request_hash": "5" * 64}
+
+    async def raw_tool(ticket_key: str, request_hash: str) -> str:
+        raise AssertionError("审批拒绝后不可进入原始 Tool")
+
+    async def emit(_kind, _data):
+        pass
+
+    async def not_cancelled():
+        return False
+
+    monkeypatch.setattr("app.runtime.approval.interrupt", lambda _payload: False)
+    try:
+        run_id = await _running_run(factory, "worker-a")
+        model = ToolCallingModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "ticket.create", "args": args, "id": "call-rejected"}],
+                ),
+                AIMessage(content="已拒绝"),
+            ]
+        )
+        runtime = LangChainAgentRuntime(
+            model,
+            [
+                StructuredTool.from_function(
+                    coroutine=raw_tool, name="ticket.create", description="受控工单"
+                )
+            ],
+            "",
+            5,
+            run_id=run_id,
+            tool_policies={
+                "ticket.create": {
+                    "name": "ticket.create",
+                    "effect_type": "EXTERNAL_WRITE",
+                    "policy": {"write_allowed": True, "requires_approval": True},
+                }
+            },
+            approval_session_factory=factory,
+            effect_store=EffectStore(factory),
+            effect_providers={"ticket.create": provider},
+            worker_id="worker-a",
+        )
+        assert (
+            await runtime.run(run_id, [HumanMessage(content="创建工单")], emit, not_cancelled)
+            == "已拒绝"
+        )
+        async with factory() as db:
+            assert await db.scalar(select(Approval).where(Approval.run_id == run_id)) is not None
+            assert (
+                await db.scalar(select(EffectRecord).where(EffectRecord.origin_run_id == run_id))
+                is None
+            )
+            assert (
+                await db.scalar(select(ToolExecution).where(ToolExecution.run_id == run_id)) is None
+            )
+        assert provider.calls == 0
+        assert provider.ledger == {}
+    finally:
+        await engine.dispose()
+
+
+async def test_policy_denial_is_recorded_without_approval_or_effect():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        run_id = await _running_run(factory, "worker-a")
+        middleware = PolicyMiddleware(
+            factory,
+            run_id,
+            "worker-a",
+            {
+                "ticket.create": {
+                    "name": "ticket.create",
+                    "effect_type": "EXTERNAL_WRITE",
+                    "policy": {"write_allowed": False, "requires_approval": True},
+                }
+            },
+        )
+
+        async def handler(_request):
+            raise AssertionError("拒绝后不应进入审批或 Effect")
+
+        request = SimpleNamespace(
+            tool_call={"name": "ticket.create", "id": "denied", "args": {"secret": "x"}}
+        )
+        with pytest.raises(PolicyDenied) as exc:
+            await middleware.awrap_tool_call(request, handler)
+        assert exc.value.code == "WRITE_NOT_ALLOWED"
+        async with factory() as db:
+            event = await db.scalar(select(RunTraceEvent).where(RunTraceEvent.run_id == run_id))
+            assert event.event_type == "policy.denied"
+            assert event.data == {
+                "name": "ticket.create",
+                "reason_code": "WRITE_NOT_ALLOWED",
+                "effect_type": "EXTERNAL_WRITE",
+            }
+            assert await db.scalar(select(Approval).where(Approval.run_id == run_id)) is None
+            assert (
+                await db.scalar(select(EffectRecord).where(EffectRecord.origin_run_id == run_id))
+                is None
             )
     finally:
         await engine.dispose()

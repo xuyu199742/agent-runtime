@@ -13,6 +13,7 @@ from app.runtime.approval import ApprovalMiddleware
 from app.runtime.errors import ApprovalRecoveryLost
 from app.runtime.middleware import (
     EffectSafetyMiddleware,
+    PolicyMiddleware,
     RunContextMiddleware,
     ToolErrorMiddleware,
     TracingMiddleware,
@@ -68,6 +69,7 @@ class LangChainAgentRuntime:
             middleware=[
                 RunContextMiddleware(),
                 TracingMiddleware(model_call_journal),
+                PolicyMiddleware(approval_session_factory, run_id, worker_id, tool_policies),
                 ApprovalMiddleware(approval_session_factory, run_id, tool_policies, worker_id),
                 EffectSafetyMiddleware(
                     effect_store, run_id, worker_id, tool_policies, effect_providers

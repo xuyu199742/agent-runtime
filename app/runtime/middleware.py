@@ -7,10 +7,49 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 from app.context.errors import ContextLeaseLost
+from app.persistence.repositories.traces import ExecutionRecorder
 from app.runtime.effects.executor import EffectExecutor
-from app.runtime.errors import ToolResultUnavailable, WriteNotAllowed
+from app.runtime.errors import PolicyDenied, ToolResultUnavailable, WriteNotAllowed
+from app.runtime.policy import PolicyOutcome, evaluate_tool_policy
 
 log = structlog.get_logger()
+
+
+class PolicyMiddleware(AgentMiddleware):
+    def __init__(self, session_factory=None, run_id=None, worker_id=None, policies=None):
+        self.session_factory = session_factory
+        self.run_id = run_id
+        self.worker_id = worker_id
+        self.policies = policies
+
+    async def awrap_tool_call(self, request, handler):
+        # 未注入快照的本地 Runtime 保留现有行为；Worker 总会提供冻结快照。
+        if self.policies is None:
+            return await handler(request)
+        name = request.tool_call["name"]
+        tool = self.policies.get(name)
+        decision = evaluate_tool_policy(tool)
+        if decision.outcome == PolicyOutcome.DENY:
+            if self.session_factory is not None and self.run_id and self.worker_id:
+                async with self.session_factory() as db:
+                    recorder = ExecutionRecorder(db)
+                    if (
+                        await recorder.append(
+                            self.run_id,
+                            "policy.denied",
+                            {
+                                "name": name,
+                                "reason_code": decision.reason_code,
+                                "effect_type": (tool or {}).get("effect_type", "UNKNOWN"),
+                            },
+                            worker_id=self.worker_id,
+                        )
+                        is None
+                    ):
+                        raise ContextLeaseLost
+                    await db.commit()
+            raise PolicyDenied(decision.reason_code)
+        return await handler(request)
 
 
 class TracingMiddleware(AgentMiddleware):
