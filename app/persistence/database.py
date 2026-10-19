@@ -322,6 +322,7 @@ class EffectRecord(Base):
     status: Mapped[str] = mapped_column(String(20))
     origin_run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
     dispatch_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    dispatch_worker_id: Mapped[str | None] = mapped_column(String(100))
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconcile_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     reconcile_worker_id: Mapped[str | None] = mapped_column(String(100))

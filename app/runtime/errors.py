@@ -47,3 +47,13 @@ class WriteNotAllowed(ContextRunError):
     """写入 Tool 缺少显式受控 Provider。"""
 
     code = "WRITE_NOT_ALLOWED"
+
+
+class PolicyDenied(ContextRunError):
+    """冻结 Tool Policy 拒绝本次调用。"""
+
+    code = "POLICY_DENIED"
+
+    def __init__(self, reason_code: str):
+        super().__init__(reason_code)
+        self.code = reason_code

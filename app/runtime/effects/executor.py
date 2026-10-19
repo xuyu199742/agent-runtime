@@ -40,6 +40,9 @@ class EffectExecutor:
             if effect.status == EffectStatus.SUCCEEDED:
                 return await self._replay(identity, run_id, worker_id, call_id)
         if effect.status == EffectStatus.DISPATCHED:
+            if effect.dispatch_run_id == run_id and effect.dispatch_worker_id == worker_id:
+                # 同一持租约 Worker 的重复入口不能把在途发送误判为待核对。
+                raise EffectUncertain("外部请求仍由当前 Worker 发送")
             try:
                 await self.store.advance(effect.id, run_id, worker_id, "unknown")
             except ValueError as exc:
