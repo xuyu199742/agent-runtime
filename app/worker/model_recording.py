@@ -1,9 +1,11 @@
 """模型调用与 PostgreSQL 事实的边界；提交后才允许继续执行。"""
 
 from langchain_core.messages import BaseMessage
+from sqlalchemy import select
 
-from app.context.errors import ContextLeaseLost
+from app.context.errors import ContextBudgetExceeded, ContextLeaseLost
 from app.execution.model_serialization import serialize_model_input, serialize_model_output
+from app.persistence.database import ModelExecution
 from app.persistence.repositories.traces import ExecutionRecorder
 
 
@@ -23,6 +25,31 @@ class ModelCallJournal:
         self.provider = provider
         self.model_name = model_name
         self.budget = budget
+
+    async def ensure_working_batch(self, step_id: str, graph_step: int, limit: int) -> None:
+        async with self.session_factory() as db:
+            recorder = ExecutionRecorder(db)
+            if not await recorder.owns_run(self.run_id, self.worker_id):
+                raise ContextLeaseLost
+            step_ids = (
+                await db.scalars(
+                    select(ModelExecution.step_id).where(
+                        ModelExecution.run_id == self.run_id,
+                        ModelExecution.phase == "CONTEXT_SUMMARY",
+                    )
+                )
+            ).all()
+            prefix = f"{self.run_id}:working:"
+            working_steps = {item for item in step_ids if item.startswith(prefix)}
+            graph_prefix = f"{prefix}{graph_step}:"
+            used_in_step = sum(item.startswith(graph_prefix) for item in working_steps)
+            if step_id in working_steps:
+                return
+            if used_in_step >= limit or (
+                self.budget is not None
+                and len(working_steps) >= self.budget.max_model_calls * limit
+            ):
+                raise ContextBudgetExceeded("Working Context 压缩轮数不足")
 
     async def completed_summary(self, step_id: str, messages: list[BaseMessage]) -> str | None:
         async with self.session_factory() as db:

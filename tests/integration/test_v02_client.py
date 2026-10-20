@@ -7,7 +7,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.infrastructure.passwords import hash_password
 from app.main import app
-from app.persistence.database import AgentDefinition, ExecutionSpec, ModelConfig, Run, User, get_db
+from app.persistence.database import (
+    AgentDefinition,
+    Approval,
+    ExecutionSpec,
+    ModelConfig,
+    Run,
+    User,
+    get_db,
+)
+from app.persistence.repositories.traces import trace_event
 
 
 async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
@@ -196,11 +205,55 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
             assert "event: RUN_FINISHED" in agui_events.text
             replay = await client.get(
                 f"/api/v1/client/runs/{run_id}/ag-ui/events",
-                headers={**alice, "Last-Event-ID": f"{final_sequence + 1}:1"},
+                headers={**alice, "Last-Event-ID": f"{final_sequence}:t:1"},
             )
             assert "event: TEXT_MESSAGE_CONTENT" not in replay.text
             assert "event: TEXT_MESSAGE_END" in replay.text
             assert "event: RUN_FINISHED" in replay.text
+            async with factory() as db:
+                paused = await db.get(Run, run_id)
+                paused.status = "WAITING"
+                approval = Approval(
+                    run_id=run_id,
+                    tool_call_id="call-test",
+                    tool_name="write",
+                    title="确认写入",
+                    description="测试审批续传",
+                    risk="high",
+                )
+                db.add(approval)
+                await db.flush()
+                approval_id = approval.id
+                await db.commit()
+            waiting = await client.get(f"/api/v1/client/runs/{run_id}/ag-ui/events", headers=alice)
+            waiting_cursor = f"{final_sequence}:t:0"
+            assert f"id: {waiting_cursor}\n" in waiting.text
+            async with factory() as db:
+                resumed = await db.get(Run, run_id)
+                resumed.status = "COMPLETED"
+                approved = await db.get(Approval, approval_id)
+                approved.status = "APPROVED"
+                resumed.trace_sequence += 1
+                db.add(
+                    trace_event(
+                        run_id,
+                        resumed.trace_sequence,
+                        "approval.approved",
+                        {"approval_id": approval_id, "tool_call_id": "call-test"},
+                    )
+                )
+                await db.commit()
+            resumed_events = await client.get(
+                f"/api/v1/client/runs/{run_id}/ag-ui/events",
+                headers={**alice, "Last-Event-ID": waiting_cursor},
+            )
+            assert f"id: {final_sequence + 1}:0\n" in resumed_events.text
+            assert '"status": "APPROVED"' in resumed_events.text
+            legacy_replay = await client.get(
+                f"/api/v1/client/runs/{run_id}/ag-ui/events",
+                headers={**alice, "Last-Event-ID": f"{final_sequence + 1}:0"},
+            )
+            assert '"status": "APPROVED"' in legacy_replay.text
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()

@@ -17,7 +17,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from app.context.errors import ContextBudgetExceeded, ContextStateMismatch, ContextSummaryFailed
 from app.context.tokens import approximate_tokens
-from app.context.working import ToolFactRef, WorkingMessage, plan_working_context
+from app.context.working import ToolFactRef, WorkingMessage, complete_groups, plan_working_context
 
 FactLoader = Callable[[], Awaitable[dict[str, ToolFactRef]]]
 SUMMARY_FIELDS = {"goal", "facts", "decisions", "completed", "pending", "references", "next_step"}
@@ -151,15 +151,54 @@ class WorkingContextMiddleware(AgentMiddleware):
         source: tuple[WorkingMessage, ...],
         refs: dict[str, ToolFactRef],
     ) -> str:
-        prompt = _summary_prompt(source, refs)
-        allowed_refs = _source_refs(source, refs)
-        if approximate_tokens(prompt) > self.summary_input_budget:
-            raise ContextBudgetExceeded("Working Context 摘要输入超过预算")
         metadata = get_config().get("metadata") or {}
         graph_step = metadata.get("langgraph_step")
         if graph_step is None:
             raise ContextSummaryFailed("Working Context 缺少 Graph Step")
-        step_id = f"{self.journal.run_id}:working:{graph_step}:{source_hash}"
+        round_id = f"{self.journal.run_id}:working:{graph_step}:{source_hash}"
+        groups = list(complete_groups(source))
+        previous_summary: WorkingMessage | None = None
+        batch = 0
+        while groups:
+            prefix = (previous_summary,) if previous_summary is not None else ()
+            selected: list[tuple[WorkingMessage, ...]] = []
+            for group in groups:
+                candidate = prefix + tuple(
+                    message for part in (*selected, group) for message in part
+                )
+                if approximate_tokens(_summary_prompt(candidate, refs)) > self.summary_input_budget:
+                    break
+                selected.append(group)
+            if not selected:
+                raise ContextBudgetExceeded("Working Context 单个完整交互组超过摘要输入预算")
+            chunk = prefix + tuple(message for part in selected for message in part)
+            step_id = (
+                round_id
+                if batch == 0 and len(selected) == len(groups)
+                else f"{round_id}:part:{batch}"
+            )
+            await self.journal.ensure_working_batch(step_id, graph_step, self.max_compaction_rounds)
+            summary = await self._summarize_batch(
+                step_id, chunk, refs, allowed_refs=_source_refs(chunk, refs)
+            )
+            groups = groups[len(selected) :]
+            previous_summary = WorkingMessage(
+                id=f"working-{source_hash}-{batch}",
+                role="assistant",
+                content=f"[Run 内历史摘要]\n{summary}",
+            )
+            batch += 1
+        return summary
+
+    async def _summarize_batch(
+        self,
+        step_id: str,
+        source: tuple[WorkingMessage, ...],
+        refs: dict[str, ToolFactRef],
+        *,
+        allowed_refs: set[str],
+    ) -> str:
+        prompt = _summary_prompt(source, refs)
         input_messages = [HumanMessage(content=prompt)]
         previous = await self.journal.completed_summary(step_id, input_messages)
         if previous is not None:

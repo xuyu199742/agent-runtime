@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.application.auth import Principal
 from app.domain.errors import NotFound
@@ -123,9 +123,16 @@ async def create(body: SkillInput, user: Editor, db: Db, audit: Audit, request: 
 async def publish_revision(
     skill_id: str, body: RevisionInput, user: Editor, db: Db, audit: Audit, request: Request
 ):
-    skill = await _get(db, skill_id)
+    skill = await db.scalar(select(Skill).where(Skill.id == skill_id).with_for_update())
+    if skill is None:
+        raise NotFound("Skill 不存在")
     frozen = freeze_skill(skill.name, body.body, body.resources)
-    revision = max((row.revision for row in skill.revisions), default=0) + 1
+    revision = (
+        await db.scalar(
+            select(func.max(SkillRevision.revision)).where(SkillRevision.skill_id == skill_id)
+        )
+        or 0
+    ) + 1
     db.add(
         SkillRevision(
             skill_id=skill.id,

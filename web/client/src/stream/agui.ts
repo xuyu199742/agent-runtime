@@ -79,7 +79,11 @@ export async function watchAguiEvents(options: {
             }
             if (frame.id) cursor = frame.id;
             await options.onEvent(event);
-            if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR")
+            if (
+              event.type === "RUN_ERROR" ||
+              (event.type === "RUN_FINISHED" &&
+                event.outcome?.type !== "interrupt")
+            )
               return;
           }
         }

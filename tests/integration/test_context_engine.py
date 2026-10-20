@@ -1,5 +1,6 @@
 import os
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -8,7 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.application.execution_spec import build_execution_spec
-from app.context.errors import ContextLeaseLost, ContextStateMismatch, RunContextMissing
+from app.context.errors import (
+    ContextBudgetExceeded,
+    ContextLeaseLost,
+    ContextStateMismatch,
+    RunContextMissing,
+)
 from app.execution.config import execution_spec_from_draft
 from app.persistence.database import (
     AgentDefinition,
@@ -269,6 +275,20 @@ async def test_completed_working_summary_replays_only_for_same_input_and_active_
         execution_id = await journal.start(step_id, "CONTEXT_SUMMARY", prompt)
         await journal.complete(execution_id, AIMessage(content="已保存摘要"))
         assert await journal.completed_summary(step_id, prompt) == "已保存摘要"
+        await journal.ensure_working_batch(step_id, 4, 1)
+        with pytest.raises(ContextBudgetExceeded, match="压缩轮数"):
+            await journal.ensure_working_batch(f"{run_id}:working:4:another-source", 4, 1)
+        await journal.ensure_working_batch(f"{run_id}:working:5:another-source", 5, 1)
+        globally_limited = ModelCallJournal(
+            factory,
+            run_id,
+            "worker-a",
+            "openai",
+            "fake",
+            budget=SimpleNamespace(max_model_calls=1),
+        )
+        with pytest.raises(ContextBudgetExceeded, match="压缩轮数"):
+            await globally_limited.ensure_working_batch(f"{run_id}:working:5:another-source", 5, 1)
         with pytest.raises(ContextStateMismatch, match="摘要输入不一致"):
             await journal.completed_summary(step_id, [HumanMessage(content="不同输入")])
         stale = ModelCallJournal(factory, run_id, "worker-b", "openai", "fake")
