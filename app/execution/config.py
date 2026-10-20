@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from app.domain.agent import ToolDefinition
+from app.domain.budget import ExecutionBudget
 from app.execution.draft import ExecutionSpecDraft
 
 RUNTIME_VERSION = "0.3"
@@ -22,6 +23,7 @@ class ResolvedExecutionConfig:
     v1_max_tokens: int | None = None
     context_policy: dict | None = None
     context_budget: dict | None = None
+    execution_budget: ExecutionBudget | None = None
 
     def tool_definitions(self) -> list[ToolDefinition]:
         return [
@@ -31,7 +33,7 @@ class ResolvedExecutionConfig:
                 description=tool.get("description") or "",
                 config=tool.get("config") or {},
                 policy=tool.get("policy") or {},
-                enabled=True,
+                enabled=tool.get("enabled", True),
                 effect_type=tool.get("effect_type", "READ_ONLY"),
                 failure_policy=tool.get("failure_policy", "RETURN_ERROR"),
             )
@@ -54,6 +56,8 @@ def resolve_execution_config(spec, agent, model, settings) -> ResolvedExecutionC
         return _from_v2(spec.snapshot)
     if spec.schema_version == 3:
         return _from_v3(spec.snapshot)
+    if spec.schema_version == 4:
+        return _from_v4(spec.snapshot)
     raise ValueError(f"不支持的 ExecutionSpec schema_version: {spec.schema_version}")
 
 
@@ -121,6 +125,16 @@ def _from_v3(snapshot: dict) -> ResolvedExecutionConfig:
             ):
                 raise ValueError("受控写入 Tool Contract 不完整")
     return ResolvedExecutionConfig(**{**config.__dict__, "schema_version": 3})
+
+
+def _from_v4(snapshot: dict) -> ResolvedExecutionConfig:
+    config = _from_v3(snapshot)
+    budget = ExecutionBudget.from_snapshot(snapshot["execution_budget"])
+    if budget.max_model_calls != config.max_model_calls:
+        raise ValueError("ExecutionSpec 模型调用上限不一致")
+    return ResolvedExecutionConfig(
+        **{**config.__dict__, "schema_version": 4, "execution_budget": budget}
+    )
 
 
 def _from_live_agent(agent, model, settings) -> ResolvedExecutionConfig:

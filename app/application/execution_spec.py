@@ -1,6 +1,14 @@
+from copy import deepcopy
+
 from app.config import get_settings
 from app.context.budget import build_context_budget, read_model_context
 from app.domain.agent import ToolDefinition
+from app.domain.budget import (
+    DEFAULT_MAX_DURATION_SECONDS,
+    DEFAULT_MAX_EXTERNAL_WRITES,
+    DEFAULT_MAX_TOOL_CALLS,
+    ExecutionBudget,
+)
 from app.execution.config import RUNTIME_VERSION
 from app.execution.draft import ExecutionSpecDraft
 from app.prompt.assembler import assemble
@@ -47,26 +55,37 @@ def build_execution_spec(agent, model) -> ExecutionSpecDraft:
             "name": tool.name,
             "type": tool.type,
             "description": getattr(tool, "description", "") or "",
-            "config": getattr(tool, "config", None) or {},
-            "policy": getattr(tool, "policy", None) or {},
+            "config": deepcopy(getattr(tool, "config", None) or {}),
+            "policy": deepcopy(getattr(tool, "policy", None) or {}),
             "effect_type": getattr(tool, "effect_type", "READ_ONLY"),
             "failure_policy": getattr(tool, "failure_policy", "RETURN_ERROR"),
+            "enabled": getattr(tool, "enabled", True),
         }
         for tool in sorted(agent.tools, key=lambda item: getattr(item, "id", item.name))
     ]
     return ExecutionSpecDraft(
         agent_id=agent.id,
         agent_revision=agent.revision,
-        schema_version=3 if any(tool["effect_type"] == "EXTERNAL_WRITE" for tool in tools) else 2,
+        schema_version=4,
         runtime_version=RUNTIME_VERSION,
         snapshot={
             "max_model_calls": agent.max_model_calls,
+            "execution_budget": ExecutionBudget(
+                max_model_calls=agent.max_model_calls,
+                max_tool_calls=getattr(agent, "max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+                max_external_writes=getattr(
+                    agent, "max_external_writes", DEFAULT_MAX_EXTERNAL_WRITES
+                ),
+                max_duration_seconds=getattr(
+                    agent, "max_duration_seconds", DEFAULT_MAX_DURATION_SECONDS
+                ),
+            ).snapshot(),
             "prompt": bundle.snapshot(),
             "model": {
                 "provider": model.provider,
                 "model_name": model.model_name,
                 "base_url": model.base_url,
-                "config": model.config or {},
+                "config": deepcopy(model.config or {}),
                 "api_key_encrypted": model.api_key_encrypted,
             },
             "tools": tools,

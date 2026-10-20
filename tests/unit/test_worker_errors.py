@@ -15,5 +15,5 @@ def test_worker_distinguishes_model_tool_timeout_and_infrastructure_errors():
         classify_run_error(
             ModelCallLimitExceededError(thread_count=0, run_count=2, thread_limit=None, run_limit=2)
         )
-        == "VALIDATION_ERROR"
+        == "BUDGET_MODEL_CALLS_EXCEEDED"
     )
