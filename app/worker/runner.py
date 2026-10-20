@@ -42,8 +42,10 @@ from app.runtime.context import build_context
 from app.runtime.effects.ticket import TicketCreateProvider
 from app.runtime.factory import build_model, resolve_model_config
 from app.runtime.tools import ToolConfigurationError, build_tools
+from app.runtime.working_context import WorkingContextMiddleware
 from app.worker.context_planning import prepare_v2_messages
 from app.worker.model_recording import ModelCallJournal
+from app.worker.working_context import load_tool_fact_refs
 
 log = structlog.get_logger()
 
@@ -53,7 +55,7 @@ def build_effect_providers(config, settings) -> dict:
     for tool in config.tools:
         if tool.get("effect_type", "READ_ONLY") == "READ_ONLY":
             continue
-        if config.schema_version not in {3, 4} or tool.get("name") != "ticket.create":
+        if config.schema_version not in {3, 4, 5} or tool.get("name") != "ticket.create":
             raise ToolConfigurationError("ExecutionSpec 未冻结受控写入 Contract")
         contract = (tool.get("config") or {}).get("effect_contract") or {}
         if (
@@ -80,6 +82,25 @@ class CoordinationLost(Exception):
 def classify_run_error(exc: Exception) -> str:
     if isinstance(exc, ContextRunError):
         return exc.code
+    if isinstance(exc, openai.BadRequestError):
+        body = exc.body if isinstance(exc.body, dict) else {}
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        code = error.get("code") or exc.code
+        if code in {
+            "context_length_exceeded",
+            "context_window_exceeded",
+            "input_tokens_exceed_limit",
+            "max_model_len_exceeded",
+        } or any(
+            marker in str(exc).lower()
+            for marker in (
+                "maximum context length",
+                "context length exceeded",
+                "context window exceeded",
+                "input tokens exceed",
+            )
+        ):
+            return "CONTEXT_BUDGET_EXCEEDED"
     if isinstance(exc, ModelCallLimitExceededError):
         return "BUDGET_MODEL_CALLS_EXCEEDED"
     if isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
@@ -268,6 +289,18 @@ async def run_agent(
         worker_id=worker_id,
         effect_store=EffectStore(session_factory, config.execution_budget) if worker_id else None,
         effect_providers=build_effect_providers(config, get_settings()),
+        working_context_middleware=WorkingContextMiddleware(
+            model=chat_model,
+            journal=journal,
+            soft_limit=config.context_budget["soft_limit"],
+            hard_limit=config.context_budget["hard_limit"],
+            summary_input_budget=config.context_budget["summary_input_budget"],
+            max_compaction_rounds=config.context_policy["max_compaction_rounds"],
+            recent_complete_turns=config.working_context["recent_complete_turns"],
+            fact_refs_loader=lambda: load_tool_fact_refs(session_factory, run_id),
+        )
+        if config.schema_version == 5 and journal is not None
+        else None,
     )
 
     approval_decisions = None

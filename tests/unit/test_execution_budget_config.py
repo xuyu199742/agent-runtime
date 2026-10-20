@@ -35,7 +35,11 @@ def test_new_run_freezes_execution_budget_and_tool_policy():
         config={"context_window": 8192, "max_output_tokens": 1024},
     )
     draft = build_execution_spec(agent, model)
-    assert draft.schema_version == 4
+    assert draft.schema_version == 5
+    assert draft.snapshot["working_context"] == {
+        "strategy_version": 1,
+        "recent_complete_turns": 1,
+    }
     assert draft.snapshot["execution_budget"] == {
         "max_model_calls": 5,
         "max_tool_calls": 2,
@@ -51,6 +55,7 @@ def test_new_run_freezes_execution_budget_and_tool_policy():
         None,
     )
     assert config.execution_budget.max_tool_calls == 2
+    assert config.working_context == draft.snapshot["working_context"]
     assert config.tools[0]["policy"]["requires_approval"] is True
 
 
@@ -69,3 +74,24 @@ def test_legacy_spec_keeps_legacy_budget_behavior():
         )
         assert config.execution_budget is None
         assert config.max_model_calls == 3
+
+
+def test_v4_spec_does_not_enable_working_context():
+    snapshot = {
+        "max_model_calls": 3,
+        "prompt": {"rendered": ""},
+        "model": {"provider": "openai", "model_name": "fake"},
+        "tools": [],
+        "context_policy": {},
+        "context_budget": {},
+        "execution_budget": {
+            "max_model_calls": 3,
+            "max_tool_calls": 3,
+            "max_external_writes": 0,
+            "max_duration_seconds": 60,
+        },
+    }
+    config = resolve_execution_config(
+        SimpleNamespace(schema_version=4, snapshot=snapshot), None, None, None
+    )
+    assert config.working_context is None

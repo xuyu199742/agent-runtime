@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
 
+from app.context.errors import ContextLeaseLost, ContextStateMismatch
 from app.execution.model_serialization import model_input_hash
 from app.persistence.database import ModelExecution, Run, RunTraceEvent, ToolExecution, new_id
 from app.runtime.budget import BudgetModelCallsExceeded, check_deadline
@@ -122,6 +123,31 @@ class ExecutionRecorder:
             .with_for_update()
         )
         return owned is not None
+
+    async def completed_summary(
+        self, run_id: str, worker_id: str, step_id: str, input_messages: list[dict]
+    ) -> str | None:
+        if not await self.owns_run(run_id, worker_id):
+            raise ContextLeaseLost
+        row = await self.db.scalar(
+            select(ModelExecution)
+            .where(
+                ModelExecution.run_id == run_id,
+                ModelExecution.step_id == step_id,
+                ModelExecution.phase == "CONTEXT_SUMMARY",
+                ModelExecution.status == "COMPLETED",
+            )
+            .order_by(ModelExecution.attempt.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        if row.input_hash != model_input_hash(input_messages):
+            raise ContextStateMismatch("Working Context 摘要输入不一致")
+        content = (row.output_message or {}).get("content")
+        if not isinstance(content, str):
+            raise TypeError("Working Context 摘要结果缺失")
+        return content
 
     async def append(
         self,

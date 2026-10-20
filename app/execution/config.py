@@ -24,6 +24,7 @@ class ResolvedExecutionConfig:
     context_policy: dict | None = None
     context_budget: dict | None = None
     execution_budget: ExecutionBudget | None = None
+    working_context: dict | None = None
 
     def tool_definitions(self) -> list[ToolDefinition]:
         return [
@@ -58,6 +59,8 @@ def resolve_execution_config(spec, agent, model, settings) -> ResolvedExecutionC
         return _from_v3(spec.snapshot)
     if spec.schema_version == 4:
         return _from_v4(spec.snapshot)
+    if spec.schema_version == 5:
+        return _from_v5(spec.snapshot)
     raise ValueError(f"不支持的 ExecutionSpec schema_version: {spec.schema_version}")
 
 
@@ -134,6 +137,16 @@ def _from_v4(snapshot: dict) -> ResolvedExecutionConfig:
         raise ValueError("ExecutionSpec 模型调用上限不一致")
     return ResolvedExecutionConfig(
         **{**config.__dict__, "schema_version": 4, "execution_budget": budget}
+    )
+
+
+def _from_v5(snapshot: dict) -> ResolvedExecutionConfig:
+    config = _from_v4(snapshot)
+    working = snapshot["working_context"]
+    if working != {"strategy_version": 1, "recent_complete_turns": 1}:
+        raise ValueError("ExecutionSpec Working Context 策略无效")
+    return ResolvedExecutionConfig(
+        **{**config.__dict__, "schema_version": 5, "working_context": dict(working)}
     )
 
 

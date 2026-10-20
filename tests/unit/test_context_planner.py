@@ -207,7 +207,7 @@ def test_execution_spec_v2_freezes_prompt_budget_and_secret():
     missing = _model(None)
     draft = build_execution_spec(agent, small)
     larger = build_execution_spec(agent, large)
-    assert draft.schema_version == 4
+    assert draft.schema_version == 5
     assert draft.snapshot["prompt"]["sections"][1]["content"] == "只回答维修问题"
     assert draft.snapshot["model"]["api_key_encrypted"] == "ciphertext"
     assert draft.snapshot["context_budget"]["tool_schema_tokens"] > 0
