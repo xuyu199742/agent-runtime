@@ -158,8 +158,8 @@ async def maintain_lease(
                 if not await extend_lease(db, run_id, worker_id):
                     task.cancel()
                     return "lease_lost"
-        except Exception:
-            log.exception("Run 监督失败，停止旧执行", run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - 租约异常需停止旧执行
+            log.error("Run 监督失败，停止旧执行", run_id=run_id, error_type=type(exc).__name__)
             task.cancel()
             return "lease_lost"
     return "finished"
