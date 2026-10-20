@@ -32,6 +32,7 @@ import { useChat } from "../composables/useChat";
 import { runErrorText } from "../stream/errors";
 import { isTerminal } from "../stream/state";
 import ArtifactViewer from "../components/ArtifactViewer.vue";
+import MarkdownText from "../components/MarkdownText.vue";
 
 const auth = useAuthStore(),
   route = useRoute(),
@@ -49,6 +50,7 @@ const {
   stream,
   approvals,
   artifacts,
+  activities,
   loading,
   sending,
   reconnecting,
@@ -104,6 +106,9 @@ const currentAgent = computed(() =>
   ),
 );
 const busy = computed(() => !!run.value && !isTerminal(run.value.status));
+const toolActivities = computed(() =>
+  activities.value.filter((item) => item.type === "tool"),
+);
 const pendingApprovals = computed(() =>
   run.value && !isTerminal(run.value.status) && !isTerminal(stream.value.status)
     ? approvals.value.filter((item) => item.status === "PENDING")
@@ -435,7 +440,7 @@ async function logout() {
                     : current?.agent.name
                 }}
               </div>
-              <div class="message-text">{{ item.content }}</div>
+              <markdown-text :content="item.content" />
             </div>
           </div>
           <div
@@ -453,10 +458,19 @@ async function logout() {
                   }}{{ reconnecting ? " · 重新连接中" : "" }}</span
                 >
               </div>
-              <div v-if="stream.partial" class="message-text">
-                {{ stream.partial }}<span class="typing-caret" />
-              </div>
+              <markdown-text v-if="stream.partial" :content="stream.partial" />
               <div v-else class="thinking-indicator"><i /><i /><i /></div>
+            </div>
+          </div>
+          <div v-if="toolActivities.length" class="thread-activities">
+            <div v-for="item in toolActivities" :key="item.id">
+              工具 {{ item.content.name || "执行" }}：{{
+                item.content.status === "RUNNING"
+                  ? "进行中"
+                  : item.content.status === "FAILED"
+                    ? "失败"
+                    : "已完成"
+              }}
             </div>
           </div>
           <div v-if="pendingApprovals.length" class="approval-stack">
