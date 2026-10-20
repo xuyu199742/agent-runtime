@@ -5,6 +5,8 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from app.config import get_settings
 from app.domain.agent import ToolDefinition
+from app.runtime.mcp import call_tool as call_mcp_tool
+from app.runtime.mcp import map_input_schema
 from app.runtime.tools.calculator import calculate, calculator
 from app.runtime.tools.echo import echo
 from app.runtime.tools.http_request import http_tool
@@ -53,6 +55,24 @@ def build_skill_read(skills: list[dict], description: str) -> BaseTool:
     )
 
 
+def build_mcp_read(definition: ToolDefinition, timeout: float) -> BaseTool:
+    config = definition.config or {}
+    schema = map_input_schema(config["input_schema"])
+
+    async def invoke(**arguments) -> str:
+        return await call_mcp_tool(
+            config, {key: value for key, value in arguments.items() if value is not None}, timeout
+        )
+
+    return StructuredTool.from_function(
+        coroutine=invoke,
+        name=definition.name,
+        description=definition.description or f"MCP 只读工具 {config['remote_name']}",
+        args_schema=schema,
+        infer_schema=False,
+    )
+
+
 def build_ticket_create(description: str) -> BaseTool:
     async def invoke(ticket_key: str, title: str) -> str:
         # EffectSafetyMiddleware 在调用此函数前接管受控写入。
@@ -85,6 +105,8 @@ def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
             result.append(NATIVE_FACTORIES[definition.name](definition.description, float(timeout)))
         elif definition.type == "NATIVE" and definition.name == "skill.read":
             result.append(build_skill_read(config.get("skills") or [], definition.description))
+        elif definition.type == "MCP" and definition.effect_type == "READ_ONLY":
+            result.append(build_mcp_read(definition, float(timeout)))
         elif (
             definition.type == "NATIVE"
             and definition.name == "ticket.create"

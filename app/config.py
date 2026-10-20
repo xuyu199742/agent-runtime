@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     dev_user_id: str = "local-dev-user"
     legacy_api_enabled: bool = False
     http_tool_allowed_hosts: str = ""
+    mcp_allowed_hosts: str = ""
+    mcp_providers: dict = Field(default_factory=dict, repr=False, exclude=True)
     ticket_service_base_url: str | None = None
     ticket_service_token: str | None = Field(default=None, repr=False, exclude=True)
     context_max_messages: int = Field(default=30, ge=1, le=100)

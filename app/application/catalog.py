@@ -8,6 +8,7 @@ from app.domain.budget import (
 )
 from app.domain.errors import Conflict, InvalidConfiguration, NotFound
 from app.persistence.repositories.catalog import CatalogRepository
+from app.runtime.mcp import discover_tool
 from app.runtime.tools import build_tools
 
 
@@ -138,6 +139,19 @@ class CatalogService:
 
     async def save_tool(self, values: dict, tool_id=None):
         tool = await self.get_tool(tool_id) if tool_id else None
+        if values["type"] == "MCP":
+            config = values["config"]
+            try:
+                discovered = await discover_tool(
+                    config["provider_id"], config["remote_name"], config.get("timeout_seconds", 10)
+                )
+            except Exception as exc:
+                raise InvalidConfiguration("MCP Tool 发现失败或未获只读授权") from exc
+            values = {
+                **values,
+                "config": {**discovered, "timeout_seconds": config.get("timeout_seconds", 10)},
+                "description": values["description"] or discovered["description"],
+            }
         return await self.catalog.save_tool(values, tool)
 
     async def list_tools(self):
