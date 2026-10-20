@@ -11,6 +11,7 @@ from app.persistence.database import (
     ModelConfig,
     Run,
     Session,
+    Skill,
     ToolDefinition,
 )
 
@@ -177,7 +178,12 @@ class CatalogRepository:
             ).all()
         )
 
-    async def save_agent(self, values: dict, tools: list, agent=None):
+    async def skills(self, skill_ids: list[str]):
+        return list((await self.db.scalars(select(Skill).where(Skill.id.in_(skill_ids)))).all())
+
+    async def save_agent(
+        self, values: dict, tools: list, agent=None, *, skills: list | None = None
+    ):
         if agent is None:
             agent = AgentDefinition()
             self.db.add(agent)
@@ -186,6 +192,7 @@ class CatalogRepository:
         if agent.id is not None:
             agent.revision += 1
         agent.tools = tools
+        agent.skills = skills or []
         await self.db.flush()
         self.db.add(
             AgentRevision(
@@ -207,6 +214,7 @@ class CatalogRepository:
                         )
                     },
                     "tool_ids": [tool.id for tool in tools],
+                    "skill_ids": [skill.id for skill in agent.skills],
                 },
             )
         )

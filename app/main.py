@@ -27,6 +27,7 @@ from app.transport.http.v1.admin import dashboard as admin_dashboard
 from app.transport.http.v1.admin import model_executions as admin_model_executions
 from app.transport.http.v1.admin import models as admin_models
 from app.transport.http.v1.admin import runs as admin_runs
+from app.transport.http.v1.admin import skills as admin_skills
 from app.transport.http.v1.admin import system as admin_system
 from app.transport.http.v1.admin import tools as admin_tools
 from app.transport.http.v1.admin import workers as admin_workers
@@ -162,6 +163,7 @@ for module in (
     admin_conversations,
     admin_dashboard,
     admin_runs,
+    admin_skills,
     admin_audit,
     admin_system,
 ):
