@@ -70,7 +70,7 @@ class ModelOut(Out):
 class ToolIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = ""
-    type: Literal["NATIVE", "HTTP"]
+    type: Literal["NATIVE", "HTTP", "MCP"]
     config: dict = Field(default_factory=dict)
     policy: dict = Field(default_factory=dict)
     effect_type: Literal["READ_ONLY"] = "READ_ONLY"
@@ -105,6 +105,17 @@ class ToolIn(BaseModel):
                 or not all(isinstance(host, str) and host for host in hosts)
             ):
                 raise ValueError("HTTP Tool 需要 allowed_hosts 域名列表")
+        if self.type == "MCP":
+            if (
+                set(self.config)
+                - {"provider_id", "remote_name", "timeout_seconds", "server_url", "input_schema"}
+                or "allowed_hosts" in self.policy
+            ):
+                raise ValueError("MCP Tool 配置无效")
+            if not isinstance(self.config.get("provider_id"), str) or not isinstance(
+                self.config.get("remote_name"), str
+            ):
+                raise ValueError("MCP Tool 缺少 Provider 或远端名称")
         timeout = self.config.get("timeout_seconds", 10)
         if (
             isinstance(timeout, bool)

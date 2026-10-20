@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from app.application.auth import Principal
+from app.domain.errors import InvalidConfiguration
+from app.runtime.mcp import list_available_tools
 from app.transport.http.common import Audit, Catalog
 from app.transport.http.v1.admin.common import record_action
 from app.transport.http.v1.dependencies import require
@@ -17,6 +19,14 @@ Tester = Annotated[Principal, Depends(require("tool:test"))]
 
 class ToolTestIn(BaseModel):
     args: dict = Field(default_factory=dict)
+
+
+@router.get("/mcp/discover/{provider_id}")
+async def discover_mcp(provider_id: str, _user: Viewer):
+    try:
+        return await list_available_tools(provider_id)
+    except Exception as exc:
+        raise InvalidConfiguration("MCP Provider 不可用或配置无效") from exc
 
 
 @router.get("")
