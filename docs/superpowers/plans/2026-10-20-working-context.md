@@ -43,7 +43,7 @@
 
 每次模型调用前估算 `system + tool_schema + messages + output_reserve + safety_margin`；前四项中的 system、tool schema、output reserve 与 margin 直接来自冻结快照，消息使用 `approximate_tokens`。`context_budget.soft_limit/hard_limit` 已扣除固定开销，规划器只比较消息部分。对同一调用再次规划须得到同样的源内容哈希和选择结果。
 
-保护集：当前用户消息、最近一个完整交互、尚未得到全部 ToolMessage 的 AI tool-call batch、等待审批或结果未定的 Effect。完整交互以消息关系界定，不按任意字符位置截断。若保护集本身超过 hard limit，抛出 `CONTEXT_BUDGET_EXCEEDED`，不得改写当前输入或 Tool 参数。
+保护集：当前用户消息、最近一个完整交互、等待审批或结果未定的 Effect。完整交互以消息关系界定，不按任意字符位置截断。若 `before_model` 竟收到未完成的 AI/Tool batch，规划器直接给出 `FAIL`，不把不完整消息送给模型。若保护集本身超过 hard limit，给出 `FAIL`，Runtime 转为 `CONTEXT_BUDGET_EXCEEDED`，不得改写当前输入或 Tool 参数。
 
 软阈值以上先替换较旧、较长、已完成且存在 `ToolExecution` 事实的 ToolMessage 内容为短引用，保留原 `tool_call_id` 和对应 AI tool-call。引用包含 `ToolExecution.id`、输出哈希和可定位的 Artifact ID；原结果仍在 PostgreSQL。仍超阈值时，对较旧的完整交互生成结构化摘要：任务目标、已验证事实、关键决策与约束、完成/未完成事项、事实引用、下一步。摘要提示明确禁止把模型猜测写作已验证事实。若压缩后仍超 hard limit，稳定失败；不无限重复调用摘要模型。
 
@@ -73,7 +73,7 @@
 
 ### P1-A：纯 Working Context planner
 
-文件：`app/context/working.py`、`tests/unit/test_working_context.py`。提供 `WorkingPlan`、`plan_working_context(messages, frozen_budget, protected_ids, fact_refs)`、`validate_tool_pairs(messages)`；只产出确定性 `KEEP/REFERENCE/SUMMARIZE/FAIL` 计划，不调用模型/数据库。单测覆盖软/硬阈值、system 与当前用户输入保护、完整 AI/Tool batch、旧 Tool 引用、无法压缩的大结果、同输入同哈希。此 PR 无 migration、无 Runtime 行为变化。
+文件：`app/context/working.py`、`tests/unit/test_working_context.py`。提供 `WorkingPlan`、`plan_working_context(messages, soft_limit, hard_limit, fact_refs, recent_complete_turns)`、`validate_tool_pairs(messages)`；只产出确定性 `KEEP/REFERENCE/SUMMARIZE/FAIL` 计划，不调用模型/数据库。单测覆盖软/硬阈值、system 与当前用户输入保护、完整 AI/Tool batch、旧 Tool 引用、无法压缩的大结果、同输入同哈希。此 PR 无 migration、无 Runtime 行为变化。
 
 ### P1-B：Runtime 接入与恢复
 
