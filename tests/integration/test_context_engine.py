@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.application.execution_spec import build_execution_spec
-from app.context.errors import ContextLeaseLost, RunContextMissing
+from app.context.errors import ContextLeaseLost, ContextStateMismatch, RunContextMissing
 from app.execution.config import execution_spec_from_draft
 from app.persistence.database import (
     AgentDefinition,
@@ -253,6 +253,27 @@ async def test_summary_attempt_before_snapshot_does_not_block_replanning():
         )
         assert resumed is False
         assert any(message.content == "当前" for message in messages)
+    finally:
+        await engine.dispose()
+
+
+async def test_completed_working_summary_replays_only_for_same_input_and_active_lease():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        run_id, _config = await _seed_run(factory, uuid4().hex[:8], lease_owner="worker-a")
+        journal = ModelCallJournal(factory, run_id, "worker-a", "openai", "fake")
+        step_id = f"{run_id}:working:4:source"
+        prompt = [HumanMessage(content="待压缩历史")]
+        assert await journal.completed_summary(step_id, prompt) is None
+        execution_id = await journal.start(step_id, "CONTEXT_SUMMARY", prompt)
+        await journal.complete(execution_id, AIMessage(content="已保存摘要"))
+        assert await journal.completed_summary(step_id, prompt) == "已保存摘要"
+        with pytest.raises(ContextStateMismatch, match="摘要输入不一致"):
+            await journal.completed_summary(step_id, [HumanMessage(content="不同输入")])
+        stale = ModelCallJournal(factory, run_id, "worker-b", "openai", "fake")
+        with pytest.raises(ContextLeaseLost):
+            await stale.completed_summary(step_id, prompt)
     finally:
         await engine.dispose()
 

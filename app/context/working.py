@@ -15,6 +15,7 @@ class WorkingMessage:
     content: str
     tool_call_ids: tuple[str, ...] = ()
     tool_call_id: str | None = None
+    tool_call_payload: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,10 @@ def validate_tool_pairs(messages: tuple[WorkingMessage, ...]) -> bool:
 
 
 def _estimate(messages: tuple[WorkingMessage, ...]) -> int:
-    return sum(approximate_tokens(message.content) + 4 for message in messages)
+    return sum(
+        approximate_tokens(message.content) + approximate_tokens(message.tool_call_payload) + 4
+        for message in messages
+    )
 
 
 def _source_hash(
@@ -93,6 +97,7 @@ def _source_hash(
                 "content": message.content,
                 "tool_call_ids": message.tool_call_ids,
                 "tool_call_id": message.tool_call_id,
+                "tool_call_payload": message.tool_call_payload,
             }
             for message in messages
         ],
@@ -144,11 +149,16 @@ def plan_working_context(
     if latest_user is not None:
         protected.add(latest_user.id)
     complete_kept = 0
+    protect_prior_user = False
     for group in reversed(groups):
-        if not group.complete or complete_kept < recent_complete_turns:
+        role = group.messages[0].role
+        if role == "assistant" and complete_kept < recent_complete_turns:
             protected.update(message.id for message in group.messages)
-        if group.complete:
             complete_kept += 1
+            protect_prior_user = True
+        elif role == "user" and protect_prior_user:
+            protected.update(message.id for message in group.messages)
+            protect_prior_user = False
     if _estimate(tuple(message for message in messages if message.id in protected)) > hard_limit:
         return WorkingPlan("FAIL", source_hash, messages, estimate)
 
@@ -169,8 +179,9 @@ def plan_working_context(
 
     planned_messages = tuple(planned)
     estimate = _estimate(planned_messages)
+    planned_by_id = {message.id: message for message in planned_messages}
     candidates = tuple(
-        message
+        planned_by_id[message.id]
         for group in groups
         if group.complete and all(message.id not in protected for message in group.messages)
         for message in group.messages

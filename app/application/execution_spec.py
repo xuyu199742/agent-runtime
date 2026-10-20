@@ -66,7 +66,7 @@ def build_execution_spec(agent, model) -> ExecutionSpecDraft:
     return ExecutionSpecDraft(
         agent_id=agent.id,
         agent_revision=agent.revision,
-        schema_version=4,
+        schema_version=5,
         runtime_version=RUNTIME_VERSION,
         snapshot={
             "max_model_calls": agent.max_model_calls,
@@ -91,5 +91,6 @@ def build_execution_spec(agent, model) -> ExecutionSpecDraft:
             "tools": tools,
             "context_policy": policy,
             "context_budget": numbers,
+            "working_context": {"strategy_version": 1, "recent_complete_turns": 1},
         },
     )

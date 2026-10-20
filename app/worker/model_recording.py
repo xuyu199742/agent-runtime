@@ -24,6 +24,16 @@ class ModelCallJournal:
         self.model_name = model_name
         self.budget = budget
 
+    async def completed_summary(self, step_id: str, messages: list[BaseMessage]) -> str | None:
+        async with self.session_factory() as db:
+            result = await ExecutionRecorder(db).completed_summary(
+                self.run_id,
+                self.worker_id,
+                step_id,
+                serialize_model_input(messages),
+            )
+            return result
+
     async def start(self, step_id: str, phase: str, messages: list[BaseMessage]) -> str:
         async with self.session_factory() as db:
             row = await ExecutionRecorder(db).start_model(

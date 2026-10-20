@@ -1,6 +1,6 @@
 # Run 内 Working Context 实施计划
 
-> **For agentic workers:** 本计划分 P1-A、P1-B 两个顺序 PR；逐项验证后再进入下一项。当前只完成设计，不启动 Skill、MCP、AG-UI。
+> **实施状态（2026-10-20）：** P1-A 的纯规划器及 P1-B 的运行时接入已在 `codex/working-context-design` 分支实现，作为依赖 Budget PR #13 的一组改动评审。PR #13 尚未合并，因此 Working Context 不属于当前 `master`。Skill、MCP、AG-UI 尚未启动。
 
 **目标：** 每次 Agent 模型调用前控制 Working Context 的大小，保留原始执行事实，并在 Worker 崩溃或租约接管后复用已提交的压缩结果。
 
@@ -12,7 +12,7 @@
 
 ## 评审结论与前置条件
 
-- **ACCEPT WITH CHANGES。** 文档对主线预算缺失的判断正确；预算已通过面向 `master` 的 PR #13 重新提出，165 项测试、迁移往返与 CI 已通过。P1-B 应从 #13 合并后的主线开始；P1-A 仅包含纯规划逻辑，可独立评审。
+- **ACCEPT WITH CHANGES。** 文档对主线预算缺失的判断正确；预算已通过面向 `master` 的 PR #13 重新提出。P1-B 先在 PR #13 分支之上开发与测试，待 PR #13 合并后再合入主线；P1-A 与 P1-B 作为一个依赖 PR 评审。
 - 现有 `RunContextSnapshot` 只冻结首次模型调用前的会话上下文；`app/worker/context_planning.py` 不处理 Run 内 Tool/Model 循环。
 - 官方 `SummarizationMiddleware` 支持 `abefore_model` 和安全的 AI/Tool 消息边界，也会用 `RemoveMessage` 更新图状态；但其摘要调用没有接入本项目 `ModelExecution`，只统计消息 token，且摘要输入超大时可能返回固定文本。第一版借鉴其 hook/reducer，不直接接入该中间件。
 - 现有 `LeaseFencedPostgresSaver` 已把 checkpoint 写入与 Run 租约检查放在同一事务。P1-B 仍须通过故障注入证明压缩状态与模型调用之间的 checkpoint 顺序。

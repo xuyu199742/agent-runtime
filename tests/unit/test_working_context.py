@@ -109,3 +109,41 @@ def test_incomplete_latest_tool_batch_fails_closed_without_rewriting_it():
 def test_orphan_tool_message_is_rejected():
     with pytest.raises(ValueError, match="孤立 ToolMessage"):
         validate_tool_pairs((_message("t-1", "tool", "oops", tool_call_id="call-1"),))
+
+
+def test_tool_call_arguments_are_part_of_source_hash():
+    first = (
+        _message("u", "user", "查询"),
+        _message("a", "assistant", "", tool_call_ids=("call",), tool_call_payload='{"q":"a"}'),
+        _message("t", "tool", "结果", tool_call_id="call"),
+    )
+    second = (first[0], replace(first[1], tool_call_payload='{"q":"b"}'), first[2])
+    assert plan_working_context(first, soft_limit=100, hard_limit=120).source_hash != (
+        plan_working_context(second, soft_limit=100, hard_limit=120).source_hash
+    )
+
+
+def test_tool_call_arguments_count_against_hard_limit():
+    messages = (
+        _message("u", "user", "当前问题"),
+        _message("a", "assistant", "", tool_call_ids=("call",), tool_call_payload="参数" * 80),
+        _message("t", "tool", "短结果", tool_call_id="call"),
+    )
+    assert plan_working_context(messages, soft_limit=40, hard_limit=60).action == "FAIL"
+
+
+def test_recent_complete_tool_turn_stays_protected_before_current_user():
+    messages = (
+        _message("u1", "user", "上一个问题"),
+        _message("a1", "assistant", "", tool_call_ids=("call-1",)),
+        _message("t1", "tool", "结果" * 20, tool_call_id="call-1"),
+        _message("u2", "user", "当前问题"),
+    )
+    plan = plan_working_context(
+        messages,
+        soft_limit=50,
+        hard_limit=200,
+        fact_refs={"call-1": ToolFactRef("execution-1", "a" * 64)},
+    )
+    assert plan.action == "KEEP"
+    assert plan.messages == messages

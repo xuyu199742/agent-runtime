@@ -14,6 +14,10 @@ class ContextSummaryFailed(ContextRunError):
     code = "CONTEXT_SUMMARY_FAILED"
 
 
+class ContextStateMismatch(ContextRunError):
+    code = "CONTEXT_STATE_MISMATCH"
+
+
 class RunContextMissing(ContextRunError):
     code = "RUN_CONTEXT_MISSING"
 

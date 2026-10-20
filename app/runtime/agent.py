@@ -61,26 +61,31 @@ class LangChainAgentRuntime:
         worker_id: str | None = None,
         effect_store=None,
         effect_providers: dict | None = None,
+        working_context_middleware=None,
     ) -> None:
+        middleware = [
+            RunContextMiddleware(),
+            TracingMiddleware(model_call_journal),
+            PolicyMiddleware(approval_session_factory, run_id, worker_id, tool_policies),
+            ApprovalMiddleware(approval_session_factory, run_id, tool_policies, worker_id),
+            EffectSafetyMiddleware(
+                effect_store, run_id, worker_id, tool_policies, effect_providers
+            ),
+            ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
+            ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
+        ]
+        if working_context_middleware is not None:
+            middleware.append(working_context_middleware)
         self.graph = create_agent(
             model=model,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[
-                RunContextMiddleware(),
-                TracingMiddleware(model_call_journal),
-                PolicyMiddleware(approval_session_factory, run_id, worker_id, tool_policies),
-                ApprovalMiddleware(approval_session_factory, run_id, tool_policies, worker_id),
-                EffectSafetyMiddleware(
-                    effect_store, run_id, worker_id, tool_policies, effect_providers
-                ),
-                ToolErrorMiddleware(tool_execution_store, run_id, tool_policies),
-                ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
-            ],
+            middleware=middleware,
             context_schema=RunContext,
             checkpointer=checkpointer,
         )
         self.has_checkpointer = checkpointer is not None
+        self.sync_durability = working_context_middleware is not None
 
     async def inspect_interrupts(
         self, run_id: str, *, require_checkpoint: bool = False
@@ -130,6 +135,7 @@ class LangChainAgentRuntime:
             config=config,
             context={"run_id": run_id, "session_id": session_id, "user_id": user_id},
             stream_mode=["messages", "updates"],
+            **({"durability": "sync"} if self.sync_durability else {}),
         ):
             if await should_cancel():
                 raise RunCancelled

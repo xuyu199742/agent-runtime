@@ -100,7 +100,7 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
                 run = await db.get(Run, run_id)
                 spec = await db.get(ExecutionSpec, run.execution_spec_id)
                 assert spec.agent_revision == 1
-                assert spec.schema_version == 4
+                assert spec.schema_version == 5
                 instruction = next(
                     section["content"]
                     for section in spec.snapshot["prompt"]["sections"]
