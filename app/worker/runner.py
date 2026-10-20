@@ -82,6 +82,25 @@ class CoordinationLost(Exception):
 def classify_run_error(exc: Exception) -> str:
     if isinstance(exc, ContextRunError):
         return exc.code
+    if isinstance(exc, openai.BadRequestError):
+        body = exc.body if isinstance(exc.body, dict) else {}
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        code = error.get("code") or exc.code
+        if code in {
+            "context_length_exceeded",
+            "context_window_exceeded",
+            "input_tokens_exceed_limit",
+            "max_model_len_exceeded",
+        } or any(
+            marker in str(exc).lower()
+            for marker in (
+                "maximum context length",
+                "context length exceeded",
+                "context window exceeded",
+                "input tokens exceed",
+            )
+        ):
+            return "CONTEXT_BUDGET_EXCEEDED"
     if isinstance(exc, ModelCallLimitExceededError):
         return "BUDGET_MODEL_CALLS_EXCEEDED"
     if isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
