@@ -188,6 +188,40 @@ class AgentTool(Base):
     tool_id: Mapped[str] = mapped_column(ForeignKey("tools.id"), primary_key=True)
 
 
+class Skill(Base):
+    __tablename__ = "skills"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    when_to_use: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    revisions: Mapped[list["SkillRevision"]] = relationship(lazy="selectin")
+
+
+class SkillRevision(Base):
+    __tablename__ = "skill_revisions"
+    __table_args__ = (UniqueConstraint("skill_id", "revision"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    body: Mapped[str] = mapped_column(Text)
+    resources: Mapped[dict] = mapped_column(JSON, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentSkill(Base):
+    __tablename__ = "agent_skills"
+
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+    )
+    skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), primary_key=True)
+
+
 class AgentDefinition(Base):
     __tablename__ = "agents"
 
@@ -208,6 +242,7 @@ class AgentDefinition(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     tools: Mapped[list[ToolDefinition]] = relationship(secondary="agent_tools", lazy="selectin")
+    skills: Mapped[list[Skill]] = relationship(secondary="agent_skills", lazy="selectin")
 
 
 class AgentRevision(Base):

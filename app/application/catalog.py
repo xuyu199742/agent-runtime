@@ -20,6 +20,7 @@ class AgentInput:
     max_model_calls: int
     enabled: bool
     tool_ids: list[str]
+    skill_ids: list[str] | None = None
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
     max_external_writes: int = DEFAULT_MAX_EXTERNAL_WRITES
     max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS
@@ -41,6 +42,12 @@ class CatalogService:
         tools = await catalog.tools(body.tool_ids)
         if len(tools) != len(set(body.tool_ids)) or any(not tool.enabled for tool in tools):
             raise InvalidConfiguration("工具不存在、重复或未启用")
+        skill_ids = body.skill_ids or []
+        skills = await catalog.skills(skill_ids)
+        if len(skills) != len(set(skill_ids)) or any(
+            not skill.enabled or not skill.revisions for skill in skills
+        ):
+            raise InvalidConfiguration("Skill 不存在、重复、未启用或没有版本")
         values = {
             key: getattr(body, key)
             for key in (
@@ -55,7 +62,7 @@ class CatalogService:
                 "enabled",
             )
         }
-        return await catalog.save_agent(values, tools, agent)
+        return await catalog.save_agent(values, tools, agent, skills=skills)
 
     async def list_agents(self):
         return await self.catalog.list_agents()
@@ -200,4 +207,5 @@ def agent_out(agent) -> dict:
     return {
         **{field: getattr(agent, field) for field in fields},
         "tool_ids": [tool.id for tool in agent.tools],
+        "skill_ids": [skill.id for skill in getattr(agent, "skills", [])],
     }

@@ -130,6 +130,7 @@ class AgentIn(BaseModel):
     max_duration_seconds: int = Field(default=DEFAULT_MAX_DURATION_SECONDS, ge=1, le=86400)
     enabled: bool = True
     tool_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
 
 
 class AgentOut(Out):
@@ -144,6 +145,7 @@ class AgentOut(Out):
     max_duration_seconds: int
     enabled: bool
     tool_ids: list[str]
+    skill_ids: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

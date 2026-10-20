@@ -25,6 +25,7 @@ class ResolvedExecutionConfig:
     context_budget: dict | None = None
     execution_budget: ExecutionBudget | None = None
     working_context: dict | None = None
+    skills: list[dict] = field(default_factory=list)
 
     def tool_definitions(self) -> list[ToolDefinition]:
         return [
@@ -61,6 +62,8 @@ def resolve_execution_config(spec, agent, model, settings) -> ResolvedExecutionC
         return _from_v4(spec.snapshot)
     if spec.schema_version == 5:
         return _from_v5(spec.snapshot)
+    if spec.schema_version == 6:
+        return _from_v6(spec.snapshot)
     raise ValueError(f"不支持的 ExecutionSpec schema_version: {spec.schema_version}")
 
 
@@ -148,6 +151,23 @@ def _from_v5(snapshot: dict) -> ResolvedExecutionConfig:
     return ResolvedExecutionConfig(
         **{**config.__dict__, "schema_version": 5, "working_context": dict(working)}
     )
+
+
+def _from_v6(snapshot: dict) -> ResolvedExecutionConfig:
+    from app.skills.content import freeze_skill
+
+    config = _from_v5(snapshot)
+    skills = list(snapshot["skills"])
+    if not skills or len({skill["name"] for skill in skills}) != len(skills):
+        raise ValueError("ExecutionSpec Skill 列表无效")
+    for skill in skills:
+        expected = freeze_skill(skill["name"], skill["body"], skill["resources"])
+        if skill["content_hash"] != expected["content_hash"]:
+            raise ValueError("ExecutionSpec Skill 内容校验失败")
+    skill_tool = next((tool for tool in config.tools if tool["name"] == "skill.read"), None)
+    if skill_tool is None or skill_tool["config"]["skills"] != skills:
+        raise ValueError("ExecutionSpec Skill Tool 不一致")
+    return ResolvedExecutionConfig(**{**config.__dict__, "schema_version": 6, "skills": skills})
 
 
 def _from_live_agent(agent, model, settings) -> ResolvedExecutionConfig:

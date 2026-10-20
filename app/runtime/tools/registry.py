@@ -40,6 +40,19 @@ def build_echo(description: str, timeout: float) -> BaseTool:
 NATIVE_FACTORIES = {"calculator": build_calculator, "echo": build_echo}
 
 
+def build_skill_read(skills: list[dict], description: str) -> BaseTool:
+    from app.skills.content import read_skill_content
+
+    async def invoke(name: str, resource: str | None = None) -> str:
+        return read_skill_content(skills, name, resource)
+
+    return StructuredTool.from_function(
+        coroutine=invoke,
+        name="skill.read",
+        description=description or "按需读取此 Run 允许的 Skill 正文或 references 资源",
+    )
+
+
 def build_ticket_create(description: str) -> BaseTool:
     async def invoke(ticket_key: str, title: str) -> str:
         # EffectSafetyMiddleware 在调用此函数前接管受控写入。
@@ -70,6 +83,8 @@ def build_tools(definitions: Sequence[ToolDefinition]) -> list[BaseTool]:
             raise ToolConfigurationError("Tool 超时配置无效")
         if definition.type == "NATIVE" and definition.name in NATIVE_FACTORIES:
             result.append(NATIVE_FACTORIES[definition.name](definition.description, float(timeout)))
+        elif definition.type == "NATIVE" and definition.name == "skill.read":
+            result.append(build_skill_read(config.get("skills") or [], definition.description))
         elif (
             definition.type == "NATIVE"
             and definition.name == "ticket.create"

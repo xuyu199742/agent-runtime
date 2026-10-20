@@ -55,7 +55,7 @@ def build_effect_providers(config, settings) -> dict:
     for tool in config.tools:
         if tool.get("effect_type", "READ_ONLY") == "READ_ONLY":
             continue
-        if config.schema_version not in {3, 4, 5} or tool.get("name") != "ticket.create":
+        if config.schema_version not in {3, 4, 5, 6} or tool.get("name") != "ticket.create":
             raise ToolConfigurationError("ExecutionSpec 未冻结受控写入 Contract")
         contract = (tool.get("config") or {}).get("effect_contract") or {}
         if (
@@ -299,7 +299,7 @@ async def run_agent(
             recent_complete_turns=config.working_context["recent_complete_turns"],
             fact_refs_loader=lambda: load_tool_fact_refs(session_factory, run_id),
         )
-        if config.schema_version == 5 and journal is not None
+        if config.schema_version in {5, 6} and journal is not None
         else None,
     )
 
