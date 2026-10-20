@@ -304,6 +304,35 @@ async def test_long_history_is_summarized_within_summary_budget():
 
 
 @pytest.mark.asyncio
+async def test_hundreds_of_turns_keep_current_input_and_bound_summary_calls():
+    calls = 0
+
+    async def summarize(prompt: str) -> str:
+        nonlocal calls
+        calls += 1
+        assert approximate_tokens(prompt) <= 500
+        return "已核验的历史摘要"
+
+    history = [_message(index, "历史" * 40) for index in range(500)]
+    planned = await plan_initial_context(
+        summary=None,
+        messages=[*history, _message(500, "当前问题")],
+        current_message_id="m0500",
+        budget=_budget(
+            conversation_input_budget=20_000,
+            soft_limit=50,
+            hard_limit=800,
+            summary_input_budget=500,
+        ),
+        summarize=summarize,
+    )
+    assert calls > 10
+    assert planned.summary_insert is not None
+    assert planned.summary_insert.source_message_count == 500
+    assert planned.message_ids == ["m0500"]
+
+
+@pytest.mark.asyncio
 async def test_one_history_message_larger_than_summary_budget_fails():
     async def summarize(_prompt: str) -> str:
         raise AssertionError("单条历史放不进摘要预算时不应调用模型")

@@ -27,6 +27,6 @@ async def sweep_checkpoints(saver: AsyncPostgresSaver, retention_hours: int) -> 
             count = await cleanup_checkpoints(saver, retention_hours)
             if count:
                 log.info("已清理过期 Checkpoint", count=count)
-        except Exception:
-            log.exception("Checkpoint 清理失败，下次重试")
+        except Exception as exc:  # noqa: BLE001 - 定时清理失败后继续下一轮
+            log.warning("Checkpoint 清理失败，下次重试", error_type=type(exc).__name__)
         await asyncio.sleep(3600)

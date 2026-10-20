@@ -26,8 +26,10 @@ async def consume_queue(
             activity.running += 1
         try:
             await handler(stream_id, fields)
-        except Exception:
-            log.exception("Run 消费失败，保留未确认消息", stream_id=stream_id)
+        except Exception as exc:  # noqa: BLE001 - 保留消息供 Worker 恢复
+            log.error(
+                "Run 消费失败，保留未确认消息", stream_id=stream_id, error_type=type(exc).__name__
+            )
         finally:
             if activity is not None:
                 activity.running -= 1
@@ -40,9 +42,9 @@ async def consume_queue(
                 entries = await queue.claim_idle(worker_id, count=1)
                 if not entries:
                     entries = await queue.read(worker_id, block_ms=1000, count=1)
-            except RedisError:
+            except RedisError as exc:
                 slots.release()
-                log.exception("Run Queue 暂不可用")
+                log.warning("Run Queue 暂不可用", error_type=type(exc).__name__)
                 await asyncio.sleep(1)
                 continue
             except BaseException:
@@ -67,6 +69,6 @@ async def sweep_pending(queue: RunQueue) -> None:
                 if len(page) < 100:
                     break
                 cursor = page[-1]
-        except Exception:
-            log.exception("PENDING Run 补投暂不可用")
+        except Exception as exc:  # noqa: BLE001 - 补投循环需持续重试
+            log.warning("PENDING Run 补投暂不可用", error_type=type(exc).__name__)
         await asyncio.sleep(10)

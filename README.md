@@ -40,3 +40,5 @@ cd web/client && npm ci && npm test && npm run build && npm run format:check
 集成测试需要独立测试库及 `TEST_DATABASE_URL`、`TEST_CHECKPOINT_DATABASE_URL`、`TEST_REDIS_URL`；数据库先执行 `alembic upgrade head`。迁移前备份 PostgreSQL。回滚 Skill 迁移会删除 Skill 历史，具体边界见 [Skill 说明](docs/skill-v1.md)。外部写入的幂等与人工核对边界见 [Effect Safety](docs/v03-external-effect-safety.md)。
 
 更多运行时设计与历史决策见 [架构说明](docs/architecture.md)、[V0.2 契约](docs/v02-runtime-contract.md)、[上下文规划](docs/v03-context-planning.md)、[执行时间线](docs/v03-execution-timeline.md) 和 [可靠性边界](docs/v03-reliability-boundaries.md)。
+
+最小使用路径见 [端到端示例](docs/end-to-end-examples.md)；本轮稳定性、安全检查与部署前条件见 [收口记录](docs/stability-verification-2026-10-20.md)。
