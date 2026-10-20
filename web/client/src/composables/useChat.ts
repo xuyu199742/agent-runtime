@@ -1,6 +1,7 @@
 import { onUnmounted, ref } from "vue";
 import { api, authorizedFetch } from "../api/http";
 import { watchRunEvents } from "../stream/connect";
+import { applyActivity, watchAguiEvents, type Activity } from "../stream/agui";
 import { applyRunEvent, emptyRunState, isTerminal } from "../stream/state";
 import type {
   Agent,
@@ -29,6 +30,7 @@ export function useChat() {
   const stream = ref(emptyRunState());
   const approvals = ref<Approval[]>([]);
   const artifacts = ref<Artifact[]>([]);
+  const activities = ref<Activity[]>([]);
   const loading = ref(false);
   const sending = ref(false);
   const reconnecting = ref(false);
@@ -112,7 +114,44 @@ export function useChat() {
     controller = new AbortController();
     const signal = controller.signal;
     stream.value = emptyRunState(run.value?.status || "PENDING");
+    activities.value = [];
     reconnecting.value = false;
+    if (import.meta.env.VITE_AGUI_ENABLED === "true") {
+      void watchAguiEvents({
+        open: (cursor, streamSignal) =>
+          authorizedFetch(`${base}/runs/${runId}/ag-ui/events`, {
+            headers: cursor ? { "Last-Event-ID": cursor } : undefined,
+            signal: streamSignal,
+          }),
+        onEvent: async (event) => {
+          if (signal.aborted || run.value?.id !== runId) return;
+          reconnecting.value = false;
+          activities.value = applyActivity(activities.value, event);
+          if (event.type === "RUN_STARTED")
+            stream.value = { ...stream.value, status: "RUNNING" };
+          if (event.type === "TEXT_MESSAGE_CONTENT")
+            stream.value = {
+              ...stream.value,
+              partial: stream.value.partial + (event.delta || ""),
+            };
+          if (event.type === "ACTIVITY_SNAPSHOT") {
+            if (event.activityType === "approval") await loadApprovals(runId);
+            if (event.activityType === "artifact") await loadArtifacts();
+          }
+          if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR")
+            await syncRun(runId);
+        },
+        onRetry: () => {
+          if (!signal.aborted) reconnecting.value = true;
+        },
+        signal,
+      }).catch((cause) => {
+        if (!signal.aborted)
+          error.value =
+            cause instanceof Error ? cause.message : "AG-UI 连接失败";
+      });
+      return;
+    }
     void watchRunEvents({
       open: (cursor, streamSignal) =>
         authorizedFetch(`${base}/runs/${runId}/events`, {
@@ -149,6 +188,7 @@ export function useChat() {
     stream.value = emptyRunState();
     approvals.value = [];
     artifacts.value = [];
+    activities.value = [];
     messages.value = [];
     try {
       const detail = await api.get<Conversation>(`${base}/conversations/${id}`);
@@ -254,6 +294,13 @@ export function useChat() {
     );
     await loadApprovals(run.value.id);
     await syncRun(run.value.id);
+    if (
+      import.meta.env.VITE_AGUI_ENABLED === "true" &&
+      run.value &&
+      !isTerminal(run.value.status) &&
+      run.value.status !== "WAITING"
+    )
+      connectRun(run.value.id);
   }
 
   async function rename(title: string): Promise<void> {
@@ -284,6 +331,7 @@ export function useChat() {
     run.value = null;
     approvals.value = [];
     artifacts.value = [];
+    activities.value = [];
     stream.value = emptyRunState();
     error.value = "";
   }
@@ -300,6 +348,7 @@ export function useChat() {
     stream,
     approvals,
     artifacts,
+    activities,
     loading,
     sending,
     reconnecting,

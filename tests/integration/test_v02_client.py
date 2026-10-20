@@ -176,6 +176,31 @@ async def test_client_routes_hide_config_and_isolate_conversations(monkeypatch):
             assert (
                 await client.get(f"/api/v1/client/runs/{run_id}", headers=alice)
             ).status_code == 200
+            from app.persistence.repositories.runs import finish_run
+            from app.transport.http.v1.client import agui
+
+            monkeypatch.setattr(agui, "session_factory", factory)
+            async with factory() as db:
+                assert await finish_run(db, run_id, "worker-test", "ok")
+                final_run = await db.get(Run, run_id)
+                final_sequence = final_run.trace_sequence
+            assert (
+                await client.get(f"/api/v1/client/runs/{run_id}/ag-ui/events", headers=bob)
+            ).status_code == 404
+            agui_events = await client.get(
+                f"/api/v1/client/runs/{run_id}/ag-ui/events", headers=alice
+            )
+            assert agui_events.status_code == 200, agui_events.text
+            assert "event: RUN_STARTED" in agui_events.text
+            assert "event: TEXT_MESSAGE_CONTENT" in agui_events.text
+            assert "event: RUN_FINISHED" in agui_events.text
+            replay = await client.get(
+                f"/api/v1/client/runs/{run_id}/ag-ui/events",
+                headers={**alice, "Last-Event-ID": f"{final_sequence + 1}:1"},
+            )
+            assert "event: TEXT_MESSAGE_CONTENT" not in replay.text
+            assert "event: TEXT_MESSAGE_END" in replay.text
+            assert "event: RUN_FINISHED" in replay.text
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()

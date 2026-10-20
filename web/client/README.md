@@ -20,3 +20,5 @@ npm run build
 ```
 
 SSE 断线后使用最后收到的事件序号重连。流式文本按 `step_id` 重建，模型步骤重新执行时替换旧的未完成输出。事件过期（HTTP 410）时查询 Run 的持久状态和最终回答。浏览器刷新后会恢复本标签页正在执行的 Run；关闭标签页后可通过会话历史查看已完成的回答。
+
+可在启动或构建时设置 `VITE_AGUI_ENABLED=true` 使用 AG-UI 1.0 适配端点。它按持久 Run 事实恢复工具 Activity、审批、Artifact 提示与最终回答；实时 token 预览仍需默认 SSE。两条通道通过环境变量切换。详情见 [AG-UI 适配说明](../../docs/ag-ui-adapter.md)。

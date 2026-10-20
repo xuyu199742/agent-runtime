@@ -32,6 +32,7 @@ from app.transport.http.v1.admin import system as admin_system
 from app.transport.http.v1.admin import tools as admin_tools
 from app.transport.http.v1.admin import workers as admin_workers
 from app.transport.http.v1.client import agents as client_agents
+from app.transport.http.v1.client import agui as client_agui
 from app.transport.http.v1.client import approvals as client_approvals
 from app.transport.http.v1.client import artifacts as client_artifacts
 from app.transport.http.v1.client import conversations as client_conversations
@@ -146,6 +147,7 @@ async def ready(request: Request, db: Db):
 app.include_router(auth.router)
 for module in (
     client_agents,
+    client_agui,
     client_conversations,
     client_runs,
     client_approvals,
