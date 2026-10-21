@@ -215,7 +215,11 @@ async def test_model_fact_committed_before_checkpoint_keeps_both_attempts():
                     .order_by(RunTraceEvent.sequence)
                 )
             )
-            assert [(row.event_type, row.attempt) for row in events] == [
+            assert [
+                (row.event_type, row.attempt)
+                for row in events
+                if row.event_type != "activity.updated"
+            ] == [
                 ("model.started", 1),
                 ("model.completed", 1),
                 ("model.started", 2),
@@ -369,7 +373,11 @@ async def test_tool_and_approval_timeline_refer_to_committed_facts():
             )
             assert saved_tool.status == "COMPLETED"
             assert saved_approval.status == "PENDING"
-            assert [(item.event_type, item.ref_id) for item in timeline] == [
+            assert [
+                (item.event_type, item.ref_id)
+                for item in timeline
+                if item.event_type != "activity.updated"
+            ] == [
                 ("tool.started", tool.id),
                 ("tool.completed", tool.id),
                 ("approval.required", approval.id),

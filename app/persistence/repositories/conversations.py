@@ -68,6 +68,25 @@ class ConversationRepository:
                 statement.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit)
             )
         ).all()
+        if rows:
+            ids = [row.id for row in rows]
+            runs = (
+                await self.db.scalars(
+                    select(Run)
+                    .where(
+                        Run.session_id == session_id,
+                        (Run.message_id.in_(ids)) | (Run.answer_message_id.in_(ids)),
+                    )
+                    .order_by(Run.created_at, Run.id)
+                )
+            ).all()
+            by_message = {}
+            for run in runs:
+                by_message[run.message_id] = run.id
+                if run.answer_message_id:
+                    by_message[run.answer_message_id] = run.id
+            for row in rows:
+                row.run_id = by_message.get(row.id)
         return list(reversed(rows))
 
     async def statistics(self, session_id: str) -> dict:

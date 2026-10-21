@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 
@@ -7,6 +8,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 
 from app.context.errors import ContextLeaseLost
+from app.persistence.repositories.activity import append_snapshot, preview
 from app.persistence.repositories.traces import ExecutionRecorder
 from app.runtime.effects.executor import EffectExecutor
 from app.runtime.errors import PolicyDenied, ToolResultUnavailable, WriteNotAllowed
@@ -71,10 +73,13 @@ class TracingMiddleware(AgentMiddleware):
             execution_id = await self.model_call_journal.start(step_id, "AGENT", messages)
         try:
             response = await handler(request)
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             log.error("模型调用失败", error_type=type(exc).__name__)
             if execution_id is not None:
-                await self.model_call_journal.fail(execution_id)
+                await self.model_call_journal.fail(
+                    execution_id,
+                    "MODEL_CANCELLED" if isinstance(exc, asyncio.CancelledError) else "MODEL_ERROR",
+                )
             raise
         if execution_id is not None:
             output = next(
@@ -107,6 +112,8 @@ class ToolErrorMiddleware(AgentMiddleware):
                 call["name"],
                 policy.get("effect_type", "READ_ONLY"),
                 args_hash,
+                arguments=call.get("args", {}),
+                skill_config=policy.get("config", {}).get("skills", []),
             )
             if record.status == "COMPLETED":
                 if record.result_content is None:
@@ -136,6 +143,12 @@ class ToolErrorMiddleware(AgentMiddleware):
                         None,
                     )
                 return result
+            except asyncio.CancelledError:
+                if self.store is not None:
+                    await self.store.finish(
+                        self.run_id, call["id"], "CANCELLED", None, "TOOL_CANCELLED"
+                    )
+                raise
             except ContextLeaseLost:
                 raise
             except Exception as exc:
@@ -174,9 +187,38 @@ class EffectSafetyMiddleware(AgentMiddleware):
         provider = self.providers.get(call["name"])
         if provider is None or self.store is None or self.run_id is None or self.worker_id is None:
             raise WriteNotAllowed("写入 Tool 未配置受控 Effect Provider")
-        result = await EffectExecutor(self.store, provider).execute(
-            self.run_id, self.worker_id, call.get("args", {}), call_id=call["id"]
-        )
+        content = {
+            "name": call["name"],
+            "toolCallId": call["id"],
+            "status": "RUNNING",
+            "input": preview(call.get("args", {})),
+            "output": None,
+            "error": None,
+        }
+
+        async def snapshot():
+            async with self.store.session_factory() as db:
+                await append_snapshot(
+                    db, self.run_id, self.worker_id, f"tool:{call['id']}", "tool", dict(content)
+                )
+                await db.commit()
+
+        await snapshot()
+        try:
+            result = await EffectExecutor(self.store, provider).execute(
+                self.run_id, self.worker_id, call.get("args", {}), call_id=call["id"]
+            )
+        except ContextLeaseLost:
+            raise
+        except (Exception, asyncio.CancelledError) as exc:
+            content.update(
+                status="CANCELLED" if isinstance(exc, asyncio.CancelledError) else "FAILED",
+                error="TOOL_ERROR",
+            )
+            await snapshot()
+            raise
+        content.update(status="COMPLETED", output=preview(result))
+        await snapshot()
         return ToolMessage(content=result, tool_call_id=call["id"], name=call["name"])
 
 

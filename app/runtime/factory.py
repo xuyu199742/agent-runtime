@@ -4,6 +4,8 @@ from langchain_openai import ChatOpenAI
 
 from app.domain.agent import ModelDefinition
 from app.infrastructure.model_secrets import decrypt_model_key
+from app.runtime.compatible_model import CompatibleChatOpenAI
+from app.runtime.tool_names_model import ToolNameChatOpenAI
 
 
 @dataclass(frozen=True)
@@ -30,7 +32,16 @@ def build_model(runtime_config: ModelRuntimeConfig) -> ChatOpenAI:
         raise ValueError("模型尚未配置凭证")
     options = config.config or {}
     max_output_tokens = options.get("max_output_tokens")
-    return ChatOpenAI(
+    model_class = (
+        CompatibleChatOpenAI if config.provider == "openai-compatible" else ToolNameChatOpenAI
+    )
+    provider_options = {}
+    thinking_mode = options.get("thinking_mode", "default")
+    if config.provider == "openai-compatible" and thinking_mode in {"enabled", "disabled"}:
+        provider_options["extra_body"] = {"thinking": {"type": thinking_mode}}
+    if options.get("reasoning_effort"):
+        provider_options["reasoning_effort"] = options["reasoning_effort"]
+    return model_class(
         model=config.model_name,
         base_url=config.base_url if config.provider == "openai-compatible" else None,
         api_key=api_key or "not-required",
@@ -38,6 +49,7 @@ def build_model(runtime_config: ModelRuntimeConfig) -> ChatOpenAI:
         max_retries=options.get("max_retries", 1),
         temperature=options.get("temperature"),
         max_tokens=max_output_tokens if _positive_int(max_output_tokens) else None,
+        **provider_options,
     )
 
 

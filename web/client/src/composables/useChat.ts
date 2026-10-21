@@ -31,6 +31,7 @@ export function useChat() {
   const approvals = ref<Approval[]>([]);
   const artifacts = ref<Artifact[]>([]);
   const activities = ref<Activity[]>([]);
+  const activitiesByRun = ref<Record<string, Activity[]>>({});
   const loading = ref(false);
   const sending = ref(false);
   const reconnecting = ref(false);
@@ -65,6 +66,15 @@ export function useChat() {
     if (current.value?.id !== id) return;
     messages.value = before ? [...rows, ...messages.value] : rows;
     hasOlderMessages.value = rows.length === 30;
+    await Promise.all(
+      [
+        ...new Set(
+          rows
+            .map((row) => row.run_id)
+            .filter((runId): runId is string => !!runId),
+        ),
+      ].map((runId) => loadActivities(runId, id)),
+    );
   }
 
   async function loadOlderMessages(): Promise<void> {
@@ -81,15 +91,33 @@ export function useChat() {
     if (current.value?.id === id) artifacts.value = result.items;
   }
 
-  async function loadApprovals(runId: string): Promise<void> {
-    approvals.value = await api.get<Approval[]>(
-      `${base}/runs/${runId}/approvals`,
+  async function loadActivities(
+    runId: string,
+    conversationId = current.value?.id,
+  ): Promise<void> {
+    const previous = activitiesByRun.value[runId];
+    const result = await api.get<{ items: Activity[] }>(
+      `${base}/runs/${runId}/activity`,
     );
+    // 若请求期间已收到更新快照，保留实时内容，避免旧历史覆盖正在输出的推理。
+    if (
+      current.value?.id !== conversationId ||
+      activitiesByRun.value[runId] !== previous
+    )
+      return;
+    activitiesByRun.value = { ...activitiesByRun.value, [runId]: result.items };
+    if (run.value?.id === runId) activities.value = result.items;
+  }
+
+  async function loadApprovals(runId: string): Promise<void> {
+    const result = await api.get<Approval[]>(`${base}/runs/${runId}/approvals`);
+    if (run.value?.id === runId) approvals.value = result;
   }
 
   async function syncRun(runId: string): Promise<void> {
     const latest = await api.get<Run>(`${base}/runs/${runId}`);
-    if (current.value?.id !== latest.conversation_id) return;
+    if (current.value?.id !== latest.conversation_id || run.value?.id !== runId)
+      return;
     run.value = latest;
     stream.value = {
       ...stream.value,
@@ -105,7 +133,12 @@ export function useChat() {
     if (isTerminal(latest.status)) {
       approvals.value = [];
       sessionStorage.removeItem(activeKey(latest.conversation_id));
-      await Promise.all([loadMessages(), loadConversations(), loadArtifacts()]);
+      await Promise.all([
+        loadMessages(),
+        loadConversations(),
+        loadArtifacts(),
+        loadActivities(runId),
+      ]);
     }
   }
 
@@ -114,9 +147,9 @@ export function useChat() {
     controller = new AbortController();
     const signal = controller.signal;
     stream.value = emptyRunState(run.value?.status || "PENDING");
-    activities.value = [];
+    activities.value = activitiesByRun.value[runId] || [];
     reconnecting.value = false;
-    if (import.meta.env.VITE_AGUI_ENABLED === "true") {
+    if (import.meta.env.VITE_AGUI_ENABLED !== "false") {
       void watchAguiEvents({
         open: (cursor, streamSignal) =>
           authorizedFetch(`${base}/runs/${runId}/ag-ui/events`, {
@@ -127,6 +160,10 @@ export function useChat() {
           if (signal.aborted || run.value?.id !== runId) return;
           reconnecting.value = false;
           activities.value = applyActivity(activities.value, event);
+          activitiesByRun.value = {
+            ...activitiesByRun.value,
+            [runId]: activities.value,
+          };
           if (event.type === "RUN_STARTED")
             stream.value = { ...stream.value, status: "RUNNING" };
           if (event.type === "TEXT_MESSAGE_CONTENT")
@@ -190,17 +227,22 @@ export function useChat() {
     approvals.value = [];
     artifacts.value = [];
     activities.value = [];
+    activitiesByRun.value = {};
     messages.value = [];
     try {
       const detail = await api.get<Conversation>(`${base}/conversations/${id}`);
       if (currentSelection !== selection) return;
       current.value = detail;
       await Promise.all([loadMessages(), loadArtifacts()]);
-      const activeRunId = sessionStorage.getItem(activeKey(id));
+      const activeRunId =
+        [...messages.value].reverse().find((item) => item.run_id)?.run_id ||
+        sessionStorage.getItem(activeKey(id));
       if (activeRunId) {
         const latest = await api.get<Run>(`${base}/runs/${activeRunId}`);
         if (currentSelection !== selection) return;
         run.value = latest;
+        await loadActivities(activeRunId, id);
+        if (currentSelection !== selection) return;
         if (isTerminal(latest.status)) await syncRun(activeRunId);
         else {
           if (latest.status === "WAITING") await loadApprovals(activeRunId);
@@ -251,6 +293,7 @@ export function useChat() {
       );
       if (current.value?.id !== conversationId) return true;
       optimistic.id = accepted.message.id;
+      optimistic.run_id = accepted.run.id;
       run.value = {
         id: accepted.run.id,
         conversation_id: conversationId,
@@ -327,6 +370,7 @@ export function useChat() {
     approvals.value = [];
     artifacts.value = [];
     activities.value = [];
+    activitiesByRun.value = {};
     stream.value = emptyRunState();
     error.value = "";
   }
@@ -344,6 +388,7 @@ export function useChat() {
     approvals,
     artifacts,
     activities,
+    activitiesByRun,
     loading,
     sending,
     reconnecting,

@@ -10,6 +10,7 @@ from app.persistence.database import ModelExecution, Run, RunTraceEvent, ToolExe
 from app.runtime.budget import BudgetModelCallsExceeded, check_deadline
 
 TRACE_TYPES = {
+    "activity.updated",
     "run.started",
     "run.resumed",
     "run.waiting",

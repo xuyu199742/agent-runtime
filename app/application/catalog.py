@@ -1,12 +1,13 @@
 from dataclasses import dataclass
 
+from app.context.budget import read_model_context
 from app.domain.agent import ToolDefinition as RuntimeToolDefinition
 from app.domain.budget import (
     DEFAULT_MAX_DURATION_SECONDS,
     DEFAULT_MAX_EXTERNAL_WRITES,
     DEFAULT_MAX_TOOL_CALLS,
 )
-from app.domain.errors import Conflict, InvalidConfiguration, NotFound
+from app.domain.errors import Conflict, InvalidConfiguration, ModelContextConfigMissing, NotFound
 from app.persistence.repositories.catalog import CatalogRepository
 from app.runtime.mcp import discover_tool
 from app.runtime.tools import build_tools
@@ -69,7 +70,21 @@ class CatalogService:
         return await self.catalog.list_agents()
 
     async def public_agents(self):
-        return await self.catalog.public_agents()
+        # 旧配置仍可在管理端修复，客户端只列出具备有效模型预算的助手。
+        ready = []
+        models = {}
+        for agent in await self.catalog.public_agents():
+            if agent.model_id not in models:
+                models[agent.model_id] = await self.catalog.model(agent.model_id)
+            model = models[agent.model_id]
+            if model is None or not model.enabled or model.archived_at is not None:
+                continue
+            try:
+                read_model_context(model.config)
+            except ModelContextConfigMissing:
+                continue
+            ready.append(agent)
+        return ready
 
     async def page_agents(
         self,

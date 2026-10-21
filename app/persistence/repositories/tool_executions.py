@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.context.errors import ContextLeaseLost
 from app.persistence.database import Run, ToolExecution
+from app.persistence.repositories.activity import append_snapshot, latest_snapshot, preview
 from app.persistence.repositories.traces import ExecutionRecorder
 from app.runtime.budget import BudgetToolCallsExceeded, check_deadline
 
@@ -16,9 +17,18 @@ class ToolExecutionStore:
         self.session_factory = session_factory
         self.worker_id = worker_id
         self.budget = budget
+        self.skill_metadata = {}
 
     async def start(
-        self, run_id: str, call_id: str, name: str, effect_type: str, args_hash: str
+        self,
+        run_id: str,
+        call_id: str,
+        name: str,
+        effect_type: str,
+        args_hash: str,
+        *,
+        arguments=None,
+        skill_config=None,
     ) -> ToolExecution:
         async with self.session_factory() as db:
             recorder = ExecutionRecorder(db)
@@ -78,6 +88,46 @@ class ToolExecutionStore:
                     is None
                 ):
                     raise ContextLeaseLost
+                await append_snapshot(
+                    db,
+                    run_id,
+                    self.worker_id,
+                    f"tool:{call_id}",
+                    "tool",
+                    {
+                        "name": name,
+                        "toolCallId": call_id,
+                        "status": "RUNNING",
+                        "input": preview(arguments or {}),
+                        "output": None,
+                        "error": None,
+                    },
+                )
+                if name == "skill.read":
+                    args = arguments or {}
+                    skill = next(
+                        (
+                            item
+                            for item in skill_config or []
+                            if item.get("name") == args.get("name")
+                        ),
+                        {},
+                    )
+                    self.skill_metadata[call_id] = {
+                        "name": args.get("name", ""),
+                        "toolCallId": call_id,
+                        "resource": args.get("resource"),
+                        "revision": skill.get("revision"),
+                        "contentHash": skill.get("content_hash"),
+                    }
+                    await append_snapshot(
+                        db,
+                        run_id,
+                        self.worker_id,
+                        f"skill:{call_id}",
+                        "skill",
+                        {**self.skill_metadata[call_id], "status": "LOADING"},
+                    )
             await db.commit()
             return row
 
@@ -114,4 +164,26 @@ class ToolExecutionStore:
                 is None
             ):
                 raise ContextLeaseLost
+            previous = await latest_snapshot(db, run_id, f"tool:{call_id}")
+            activity = dict(
+                previous.content
+                if previous
+                else {"name": row.tool_name, "toolCallId": call_id, "input": None}
+            )
+            activity.update(status=status, output=preview(content), error=error_code)
+            await append_snapshot(db, run_id, self.worker_id, f"tool:{call_id}", "tool", activity)
+            if row.tool_name == "skill.read":
+                skill = await latest_snapshot(db, run_id, f"skill:{call_id}")
+                if skill:
+                    await append_snapshot(
+                        db,
+                        run_id,
+                        self.worker_id,
+                        f"skill:{call_id}",
+                        "skill",
+                        {
+                            **skill.content,
+                            "status": "LOADED" if status == "COMPLETED" else "FAILED",
+                        },
+                    )
             await db.commit()

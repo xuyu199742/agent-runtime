@@ -18,6 +18,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from app.context.errors import ContextBudgetExceeded, ContextStateMismatch, ContextSummaryFailed
 from app.context.tokens import approximate_tokens
 from app.context.working import ToolFactRef, WorkingMessage, complete_groups, plan_working_context
+from app.execution.message_content import model_content
 
 FactLoader = Callable[[], Awaitable[dict[str, ToolFactRef]]]
 SUMMARY_FIELDS = {"goal", "facts", "decisions", "completed", "pending", "references", "next_step"}
@@ -26,8 +27,11 @@ SUMMARY_FIELDS = {"goal", "facts", "decisions", "completed", "pending", "referen
 def _working_messages(messages: list[BaseMessage]) -> tuple[WorkingMessage, ...]:
     result = []
     for message in messages:
-        if not isinstance(message.content, str) or not message.id:
+        if not message.id or (
+            not isinstance(message.content, str) and not isinstance(message, AIMessage)
+        ):
             raise ContextBudgetExceeded("Working Context 包含无法安全压缩的消息")
+        text, reasoning = model_content(message)
         role = {"human": "user", "ai": "assistant", "tool": "tool", "system": "system"}.get(
             message.type
         )
@@ -38,9 +42,11 @@ def _working_messages(messages: list[BaseMessage]) -> tuple[WorkingMessage, ...]
             WorkingMessage(
                 id=message.id,
                 role=role,
-                content=message.content,
+                content=text,
                 tool_call_ids=tuple(str(call["id"]) for call in calls),
                 tool_call_id=message.tool_call_id if isinstance(message, ToolMessage) else None,
+                # 推理在工具续调时也占上下文，但不作为已验证事实加入摘要。
+                reasoning_tokens=approximate_tokens(reasoning),
                 tool_call_payload=json.dumps(
                     calls, ensure_ascii=False, sort_keys=True, default=str
                 ),
@@ -241,9 +247,10 @@ class WorkingContextMiddleware(AgentMiddleware):
         if plan.action == "KEEP":
             return None
         by_id = {message.id: message for message in plan.messages}
+        original_by_id = {message.id: message for message in working}
         replacement = [
             message.model_copy(update={"content": by_id[message.id].content})
-            if message.content != by_id[message.id].content
+            if original_by_id[message.id].content != by_id[message.id].content
             else message
             for message in messages
         ]
@@ -261,7 +268,10 @@ class WorkingContextMiddleware(AgentMiddleware):
                 AIMessage(content=f"[Run 内历史摘要]\n{summary}", id=f"working-{plan.source_hash}"),
             )
         estimated = sum(
-            approximate_tokens(message.content) + approximate_tokens(message.tool_call_payload) + 4
+            approximate_tokens(message.content)
+            + approximate_tokens(message.tool_call_payload)
+            + message.reasoning_tokens
+            + 4
             for message in _working_messages(replacement)
         )
         if estimated > self.hard_limit:

@@ -16,6 +16,7 @@ class WorkingMessage:
     tool_call_ids: tuple[str, ...] = ()
     tool_call_id: str | None = None
     tool_call_payload: str = ""
+    reasoning_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,10 @@ def complete_groups(messages: tuple[WorkingMessage, ...]) -> tuple[tuple[Working
 
 def _estimate(messages: tuple[WorkingMessage, ...]) -> int:
     return sum(
-        approximate_tokens(message.content) + approximate_tokens(message.tool_call_payload) + 4
+        approximate_tokens(message.content)
+        + approximate_tokens(message.tool_call_payload)
+        + message.reasoning_tokens
+        + 4
         for message in messages
     )
 
@@ -106,6 +110,7 @@ def _source_hash(
                 "tool_call_ids": message.tool_call_ids,
                 "tool_call_id": message.tool_call_id,
                 "tool_call_payload": message.tool_call_payload,
+                "reasoning_tokens": message.reasoning_tokens,
             }
             for message in messages
         ],

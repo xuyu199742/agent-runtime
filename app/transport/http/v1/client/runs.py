@@ -46,3 +46,11 @@ async def events(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
     return await stream_events_for_user(run_id, request, runs, user.id, after, last_event_id)
+
+
+@router.get("/{run_id}/activity")
+async def activity(run_id: str, user: CurrentUser, runs: Runs):
+    from app.persistence.repositories.activity import activity_items
+
+    await runs.visible(run_id, user.id)
+    return {"items": await activity_items(runs.repository.db, run_id)}

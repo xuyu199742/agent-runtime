@@ -27,7 +27,7 @@ type Model = RecordData & {
   provider: string;
   model_name: string;
   base_url?: string;
-  config: Record<string, number>;
+  config: Record<string, number | string>;
   enabled: boolean;
   has_api_key: boolean;
 };
@@ -58,6 +58,8 @@ const form = ref({
   temperature: 0.7,
   context_window: null as number | null,
   max_output_tokens: null as number | null,
+  thinking_mode: "default",
+  reasoning_effort: "default",
   enabled: true,
 });
 function suggestPublishedContext(modelName = form.value.model_name) {
@@ -68,8 +70,14 @@ function suggestPublishedContext(modelName = form.value.model_name) {
 }
 function open(row?: Model) {
   currentId.value = row?.id || null;
-  const storedWindow = row?.config?.context_window ?? null;
-  const storedOutput = row?.config?.max_output_tokens ?? null;
+  const storedWindow =
+    typeof row?.config?.context_window === "number"
+      ? row.config.context_window
+      : null;
+  const storedOutput =
+    typeof row?.config?.max_output_tokens === "number"
+      ? row.config.max_output_tokens
+      : null;
   contextTouched.value = storedWindow != null || storedOutput != null;
   form.value = {
     name: row?.name || "",
@@ -77,11 +85,20 @@ function open(row?: Model) {
     model_name: row?.model_name || "",
     base_url: row?.base_url || "",
     api_key: "",
-    timeout_seconds: row?.config?.timeout_seconds ?? 60,
-    max_retries: row?.config?.max_retries ?? 1,
-    temperature: row?.config?.temperature ?? 0.7,
+    timeout_seconds:
+      typeof row?.config?.timeout_seconds === "number"
+        ? row.config.timeout_seconds
+        : 60,
+    max_retries:
+      typeof row?.config?.max_retries === "number" ? row.config.max_retries : 1,
+    temperature:
+      typeof row?.config?.temperature === "number"
+        ? row.config.temperature
+        : 0.7,
     context_window: storedWindow,
     max_output_tokens: storedOutput,
+    thinking_mode: String(row?.config?.thinking_mode || "default"),
+    reasoning_effort: String(row?.config?.reasoning_effort || "default"),
     enabled: row?.enabled ?? true,
   };
   suggestPublishedContext(form.value.model_name);
@@ -100,6 +117,13 @@ function body() {
       temperature: form.value.temperature,
       context_window: form.value.context_window,
       max_output_tokens: form.value.max_output_tokens,
+      ...(form.value.provider === "openai-compatible" &&
+      form.value.thinking_mode !== "default"
+        ? { thinking_mode: form.value.thinking_mode }
+        : {}),
+      ...(form.value.reasoning_effort !== "default"
+        ? { reasoning_effort: form.value.reasoning_effort }
+        : {}),
     },
     enabled: form.value.enabled,
   };
@@ -342,6 +366,39 @@ const columns: DataTableColumns<RecordData> = [
               @focus="contextTouched = true"
           /></n-form-item>
         </div>
+        <n-form-item
+          v-if="form.provider === 'openai-compatible'"
+          label="推理模式（需模型支持）"
+        >
+          <n-select
+            v-model:value="form.thinking_mode"
+            :options="[
+              { label: '遵循供应商默认', value: 'default' },
+              { label: '开启', value: 'enabled' },
+              { label: '关闭', value: 'disabled' },
+            ]"
+          />
+        </n-form-item>
+        <n-form-item label="推理强度（需模型支持）">
+          <n-select
+            v-model:value="form.reasoning_effort"
+            :options="[
+              { label: '遵循供应商默认', value: 'default' },
+              ...[
+                'none',
+                'minimal',
+                'low',
+                'medium',
+                'high',
+                'xhigh',
+                'max',
+              ].map((value) => ({ label: value, value })),
+            ]"
+          />
+        </n-form-item>
+        <p class="mini-id">
+          仅展示模型实际返回的推理内容；不支持的模式请保持供应商默认。
+        </p>
         <n-form-item label="启用"
           ><n-switch v-model:value="form.enabled" /></n-form-item></n-form
       ><template #footer

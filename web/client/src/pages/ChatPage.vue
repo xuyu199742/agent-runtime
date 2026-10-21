@@ -20,7 +20,6 @@ import {
   EllipsisHorizontalOutline,
   LogOutOutline,
   MenuOutline,
-  PaperPlaneOutline,
   PersonOutline,
   SearchOutline,
   SparklesOutline,
@@ -33,6 +32,8 @@ import { runErrorText } from "../stream/errors";
 import { isTerminal } from "../stream/state";
 import ArtifactViewer from "../components/ArtifactViewer.vue";
 import MarkdownText from "../components/MarkdownText.vue";
+import RunActivity from "../components/RunActivity.vue";
+import type { Artifact } from "../types/api";
 
 const auth = useAuthStore(),
   route = useRoute(),
@@ -51,6 +52,7 @@ const {
   approvals,
   artifacts,
   activities,
+  activitiesByRun,
   loading,
   sending,
   reconnecting,
@@ -106,9 +108,39 @@ const currentAgent = computed(() =>
   ),
 );
 const busy = computed(() => !!run.value && !isTerminal(run.value.status));
-const toolActivities = computed(() =>
-  activities.value.filter((item) => item.type === "tool"),
+const liveText = computed(() => {
+  const latest = [...activities.value]
+    .reverse()
+    .find((item) => item.type === "model");
+  return String(latest?.content.text || stream.value.partial || "");
+});
+const activeHasAnswer = computed(() =>
+  messages.value.some(
+    (item) =>
+      item.run_id === run.value?.id &&
+      !["human", "user"].includes(item.role.toLowerCase()),
+  ),
 );
+const selectedArtifact = ref<string | null>(null);
+function openArtifact(artifact?: Artifact) {
+  selectedArtifact.value = artifact?.id || null;
+  artifactsOpen.value = true;
+}
+function orphanRun(item: (typeof messages.value)[number]): boolean {
+  return (
+    !!item.run_id &&
+    ["user", "human"].includes(item.role.toLowerCase()) &&
+    item.run_id !== run.value?.id &&
+    !messages.value.some(
+      (row) =>
+        row.run_id === item.run_id &&
+        !["human", "user"].includes(row.role.toLowerCase()),
+    )
+  );
+}
+function runArtifacts(runId?: string | null) {
+  return artifacts.value.filter((item) => item.run_id === runId);
+}
 const pendingApprovals = computed(() =>
   run.value && !isTerminal(run.value.status) && !isTerminal(stream.value.status)
     ? approvals.value.filter((item) => item.status === "PENDING")
@@ -143,11 +175,16 @@ watch(
   },
   { immediate: true },
 );
-watch([() => messages.value.length, () => stream.value.partial], async () => {
+watch([() => messages.value.length, () => liveText.value], async () => {
   await nextTick();
   if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
 });
 
+function onComposerEnter(event: KeyboardEvent) {
+  if (event.isComposing) return;
+  event.preventDefault();
+  void submit();
+}
 function newChat() {
   clearCurrent();
   draft.value = "";
@@ -321,263 +358,312 @@ async function logout() {
       </div>
     </aside>
 
-    <div class="chat-main">
-      <header class="chat-header">
-        <div class="chat-header-left">
-          <button
-            class="sidebar-toggle"
-            aria-label="打开侧栏"
-            @click="sidebarOpen = true"
-          >
-            <n-icon :component="MenuOutline" />
-          </button>
-          <div class="header-agent-mark">
-            <n-icon :component="SparklesOutline" />
-          </div>
-          <div class="header-agent">
-            <strong>{{
-              current?.agent.name || currentAgent?.name || "选择你的 Agent"
-            }}</strong
-            ><small>{{ current ? "专属对话空间" : "准备开始新的对话" }}</small>
-          </div>
-        </div>
-        <div class="header-actions">
-          <button
-            v-if="current"
-            title="重命名对话"
-            aria-label="重命名对话"
-            @click="openRename"
-          >
-            <n-icon :component="CreateOutline" /></button
-          ><button
-            title="会话文件"
-            aria-label="会话文件"
-            @click="artifactsOpen = true"
-          >
-            <n-icon :component="AttachOutline" /><span
-              v-if="artifacts.length"
-              class="artifact-count"
-              >{{ artifacts.length }}</span
-            >
-          </button>
-        </div>
-      </header>
-      <div ref="scroller" class="chat-scroll">
-        <div v-if="!current && !loading" class="welcome">
-          <div class="welcome-orbit">
-            <div class="welcome-symbol">
-              <n-icon :component="SparklesOutline" />
-            </div>
-          </div>
-          <span class="welcome-eyebrow">A SPACE FOR YOUR IDEAS</span>
-          <h1>今天，我们一起<br /><em>想些什么？</em></h1>
-          <p>选择一个 Agent，描述你的问题。余下的事情，交给我们一起完成。</p>
-          <div class="agent-search">
-            <n-icon :component="SearchOutline" /><input
-              v-model="agentSearch"
-              placeholder="搜索 Agent"
-              aria-label="搜索 Agent"
-            />
-          </div>
-          <div class="agent-picker">
+    <div class="chat-workspace" :class="{ 'has-document': artifactsOpen }">
+      <div class="chat-main" :class="{ 'is-home': !current && !loading }">
+        <header class="chat-header">
+          <div class="chat-header-left">
             <button
-              v-for="agent in visibleAgents"
-              :key="agent.id"
-              class="agent-option"
-              :class="{ selected: selectedAgentId === agent.id }"
-              @click="selectedAgentId = agent.id"
+              class="sidebar-toggle"
+              aria-label="打开侧栏"
+              @click="sidebarOpen = true"
             >
-              <span class="agent-option-icon"
-                ><n-icon :component="SparklesOutline" /></span
-              ><strong>{{ agent.name }}</strong
-              ><small>{{ agent.description || "随时准备帮你处理问题" }}</small
-              ><span class="agent-select-arrow">↗</span>
+              <n-icon :component="MenuOutline" />
             </button>
-            <div v-if="!visibleAgents.length" class="empty-agents">
-              {{
-                agentSearch
-                  ? "没有找到匹配的 Agent"
-                  : "暂无可用 Agent，请联系管理员启用后再试。"
-              }}
-            </div>
-          </div>
-        </div>
-        <n-spin v-else-if="loading" class="center-loader" size="large" />
-        <div v-else class="thread">
-          <button
-            v-if="hasOlderMessages"
-            class="older-messages"
-            @click="loadOlder"
-          >
-            <n-icon :component="ArrowUpOutline" /> 加载更早的消息
-          </button>
-          <div v-if="!messages.length" class="conversation-start">
-            <span class="conversation-start-icon"
-              ><n-icon :component="SparklesOutline"
-            /></span>
-            <h2>对话已准备好</h2>
-            <p>向 {{ current?.agent.name }} 发送第一条消息吧。</p>
-          </div>
-          <div
-            v-for="item in messages"
-            :key="item.id"
-            class="message-row"
-            :class="{
-              mine: ['user', 'human'].includes(item.role.toLowerCase()),
-            }"
-          >
-            <div
-              v-if="!['user', 'human'].includes(item.role.toLowerCase())"
-              class="message-avatar"
-            >
+            <div class="header-agent-mark">
               <n-icon :component="SparklesOutline" />
             </div>
-            <div class="message-content">
-              <div class="message-author">
+            <div class="header-agent">
+              <strong>{{ current?.title || "新对话" }}</strong
+              ><small>{{ current?.agent.name || "Agent 工作空间" }}</small>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button
+              v-if="current"
+              title="重命名对话"
+              aria-label="重命名对话"
+              @click="openRename"
+            >
+              <n-icon :component="CreateOutline" /></button
+            ><button
+              title="会话文件"
+              aria-label="会话文件"
+              @click="openArtifact()"
+            >
+              <n-icon :component="AttachOutline" /><span
+                v-if="artifacts.length"
+                class="artifact-count"
+                >{{ artifacts.length }}</span
+              >
+            </button>
+          </div>
+        </header>
+        <div ref="scroller" class="chat-scroll">
+          <div v-if="!current && !loading" class="welcome">
+            <span class="welcome-eyebrow">你的 Agent 工作空间</span>
+            <h1>你好，今天想完成什么？</h1>
+            <p>
+              给我一个目标，或者一个需要解决的问题。<br />我们从一段对话开始。
+            </p>
+            <div class="agent-search">
+              <n-icon :component="SearchOutline" /><input
+                v-model="agentSearch"
+                placeholder="搜索 Agent"
+                aria-label="搜索 Agent"
+              />
+            </div>
+            <div class="agent-picker">
+              <button
+                v-for="agent in visibleAgents"
+                :key="agent.id"
+                class="agent-option"
+                :class="{ selected: selectedAgentId === agent.id }"
+                :aria-pressed="selectedAgentId === agent.id"
+                :title="agent.description"
+                @click="selectedAgentId = agent.id"
+              >
+                <span class="agent-option-icon"
+                  ><n-icon :component="SparklesOutline" /></span
+                ><strong>{{ agent.name }}</strong
+                ><small>{{ agent.description || "随时准备帮你处理问题" }}</small
+                ><span class="agent-select-arrow">↗</span>
+              </button>
+              <div v-if="!visibleAgents.length" class="empty-agents">
                 {{
-                  ["user", "human"].includes(item.role.toLowerCase())
-                    ? "你"
-                    : current?.agent.name
+                  agentSearch
+                    ? "没有找到匹配的 Agent"
+                    : "暂无可用 Agent，请联系管理员启用后再试。"
                 }}
               </div>
-              <markdown-text :content="item.content" />
             </div>
           </div>
-          <div
-            v-if="run && !isTerminal(run.status)"
-            class="message-row streaming-row"
-          >
-            <div class="message-avatar">
-              <n-icon :component="SparklesOutline" />
+          <n-spin v-else-if="loading" class="center-loader" size="large" />
+          <div v-else class="thread">
+            <button
+              v-if="hasOlderMessages"
+              class="older-messages"
+              @click="loadOlder"
+            >
+              <n-icon :component="ArrowUpOutline" /> 加载更早的消息
+            </button>
+            <div v-if="!messages.length" class="conversation-start">
+              <span class="conversation-start-icon"
+                ><n-icon :component="SparklesOutline"
+              /></span>
+              <h2>对话已准备好</h2>
+              <p>向 {{ current?.agent.name }} 发送第一条消息吧。</p>
             </div>
-            <div class="message-content">
-              <div class="message-author">
-                {{ current?.agent.name }}
-                <span class="stream-status"
-                  ><span class="breathing-dot" />{{ statusText
-                  }}{{ reconnecting ? " · 重新连接中" : "" }}</span
+            <template v-for="item in messages" :key="item.id">
+              <div
+                class="message-row"
+                :class="{
+                  mine: ['user', 'human'].includes(item.role.toLowerCase()),
+                }"
+              >
+                <div
+                  v-if="!['user', 'human'].includes(item.role.toLowerCase())"
+                  class="message-avatar"
                 >
+                  <n-icon :component="SparklesOutline" />
+                </div>
+                <div class="message-content">
+                  <div class="message-author">
+                    {{
+                      ["user", "human"].includes(item.role.toLowerCase())
+                        ? "你"
+                        : current?.agent.name
+                    }}
+                  </div>
+                  <run-activity
+                    v-if="
+                      item.run_id &&
+                      !['user', 'human'].includes(item.role.toLowerCase())
+                    "
+                    :items="activitiesByRun[item.run_id] || []"
+                    :answer-text="item.content"
+                  />
+                  <markdown-text :content="item.content" />
+                  <div
+                    v-if="!['user', 'human'].includes(item.role.toLowerCase())"
+                    class="answer-artifacts"
+                  >
+                    <button
+                      v-for="artifact in runArtifacts(item.run_id)"
+                      :key="artifact.id"
+                      class="report-card"
+                      @click="openArtifact(artifact)"
+                    >
+                      <n-icon :component="AttachOutline" /><span
+                        ><strong>{{ artifact.name }}</strong
+                        ><small
+                          >点击阅读 ·
+                          {{ Math.ceil(artifact.size / 1024) }} KB</small
+                        ></span
+                      ><span class="report-arrow">↗</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-              <markdown-text v-if="stream.partial" :content="stream.partial" />
-              <div v-else class="thinking-indicator"><i /><i /><i /></div>
-            </div>
-          </div>
-          <div v-if="toolActivities.length" class="thread-activities">
-            <div v-for="item in toolActivities" :key="item.id">
-              工具 {{ item.content.name || "执行" }}：{{
-                item.content.status === "RUNNING"
-                  ? "进行中"
-                  : item.content.status === "FAILED"
-                    ? "失败"
-                    : "已完成"
-              }}
-            </div>
-          </div>
-          <div v-if="pendingApprovals.length" class="approval-stack">
+              <div
+                v-if="orphanRun(item) && item.run_id"
+                class="message-row historical-run"
+              >
+                <div class="message-content">
+                  <run-activity :items="activitiesByRun[item.run_id] || []" />
+                  <button
+                    v-for="artifact in runArtifacts(item.run_id)"
+                    :key="artifact.id"
+                    class="report-card"
+                    @click="openArtifact(artifact)"
+                  >
+                    <n-icon :component="AttachOutline" /><span>{{
+                      artifact.name
+                    }}</span
+                    ><span class="report-arrow">↗</span>
+                  </button>
+                </div>
+              </div></template
+            >
             <div
-              v-for="approval in pendingApprovals"
-              :key="approval.id"
-              class="approval-card"
+              v-if="run && !activeHasAnswer"
+              class="message-row streaming-row"
             >
-              <div class="approval-top">
-                <span class="approval-badge">需要你的确认</span
-                ><span class="risk-label" :class="approval.risk.toLowerCase()"
-                  >{{ approval.risk }} 风险</span
-                >
+              <div class="message-avatar">
+                <n-icon :component="SparklesOutline" />
               </div>
-              <h3>{{ approval.title }}</h3>
-              <p>{{ approval.description }}</p>
-              <small>工具：{{ approval.tool_name }}</small>
-              <div class="approval-actions">
-                <n-button
-                  size="small"
-                  @click="chooseApproval(approval.id, false)"
-                  >拒绝</n-button
-                ><n-button
-                  size="small"
-                  type="primary"
-                  @click="chooseApproval(approval.id, true)"
-                  >同意并继续</n-button
+              <div class="message-content">
+                <div class="message-author">
+                  {{ current?.agent.name }}
+                  <span class="stream-status"
+                    ><span class="breathing-dot" />{{ statusText
+                    }}{{ reconnecting ? " · 重新连接中" : "" }}</span
+                  >
+                </div>
+                <run-activity
+                  :items="activities"
+                  :status="stream.status"
+                  :answer-text="liveText"
+                />
+                <markdown-text v-if="liveText" :content="liveText" />
+                <div
+                  v-else-if="!isTerminal(run.status)"
+                  class="thinking-indicator"
+                  aria-label="正在处理"
                 >
+                  <i /><i /><i />
+                </div>
               </div>
             </div>
-          </div>
-          <div
-            v-if="run && isTerminal(run.status) && run.status !== 'COMPLETED'"
-            class="run-result"
-          >
-            <strong>{{ statusText }}</strong
-            ><span>{{ runErrorText(run.error) }}</span>
-          </div>
-          <div v-if="artifacts.length" class="thread-artifacts">
-            <span>本次会话的文件</span
-            ><button
-              v-for="artifact in artifacts.slice(0, 3)"
-              :key="artifact.id"
-              @click="artifactsOpen = true"
+            <div v-if="pendingApprovals.length" class="approval-stack">
+              <div
+                v-for="approval in pendingApprovals"
+                :key="approval.id"
+                class="approval-card"
+              >
+                <div class="approval-top">
+                  <span class="approval-badge">需要你的确认</span
+                  ><span class="risk-label" :class="approval.risk.toLowerCase()"
+                    >{{ approval.risk }} 风险</span
+                  >
+                </div>
+                <h3>{{ approval.title }}</h3>
+                <p>{{ approval.description }}</p>
+                <small>工具：{{ approval.tool_name }}</small>
+                <div class="approval-actions">
+                  <n-button
+                    size="small"
+                    @click="chooseApproval(approval.id, false)"
+                    >拒绝</n-button
+                  ><n-button
+                    size="small"
+                    type="primary"
+                    @click="chooseApproval(approval.id, true)"
+                    >同意并继续</n-button
+                  >
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="run && isTerminal(run.status) && run.status !== 'COMPLETED'"
+              class="run-result"
             >
-              <n-icon :component="AttachOutline" /> {{ artifact.name }}
+              <strong>{{ statusText }}</strong
+              ><span>{{ runErrorText(run.error) }}</span>
+            </div>
+            <div v-if="artifacts.length" class="thread-artifacts">
+              <span>本次会话的文件</span
+              ><button
+                v-for="artifact in artifacts.slice(0, 3)"
+                :key="artifact.id"
+                @click="openArtifact()"
+              >
+                <n-icon :component="AttachOutline" /> {{ artifact.name }}
+              </button>
+            </div>
+          </div>
+        </div>
+        <footer class="composer-dock">
+          <div v-if="error" class="composer-error">
+            {{ error }}
+            <button
+              v-if="run && !isTerminal(run.status)"
+              @click="connectRun(run.id)"
+            >
+              重新连接
             </button>
           </div>
-        </div>
-      </div>
-      <footer class="composer-dock">
-        <div v-if="error" class="composer-error">
-          {{ error }}
-          <button
-            v-if="run && !isTerminal(run.status)"
-            @click="connectRun(run.id)"
-          >
-            重新连接
-          </button>
-        </div>
-        <div class="composer">
-          <textarea
-            ref="composer"
-            v-model="draft"
-            :disabled="busy || sending"
-            :placeholder="
-              busy
-                ? statusText + '…'
-                : '向 ' +
-                  (current?.agent.name || currentAgent?.name || 'Agent') +
-                  ' 发送消息'
-            "
-            rows="2"
-            aria-label="输入消息"
-            @keydown.enter.exact.prevent="submit"
-          />
-          <div class="composer-bottom">
-            <span>Enter 发送 · Shift + Enter 换行</span
-            ><n-button
-              v-if="busy"
-              circle
-              type="error"
-              secondary
-              aria-label="停止生成"
-              @click="stopRun"
-              ><template #icon
-                ><n-icon :component="StopOutline" /></template></n-button
-            ><n-button
-              v-else
-              circle
-              type="primary"
-              :disabled="
-                !draft.trim() || sending || (!current && !selectedAgentId)
+          <div class="composer">
+            <textarea
+              ref="composer"
+              v-model="draft"
+              :disabled="busy || sending"
+              :placeholder="
+                busy
+                  ? statusText + '…'
+                  : '向 ' +
+                    (current?.agent.name || currentAgent?.name || 'Agent') +
+                    ' 发送消息'
               "
-              aria-label="发送消息"
-              @click="submit"
-              ><template #icon
-                ><n-icon :component="PaperPlaneOutline" /></template
-            ></n-button>
+              rows="2"
+              aria-label="输入消息"
+              @keydown.enter.exact="onComposerEnter"
+            />
+            <div class="composer-bottom">
+              <span>Enter 发送 · Shift + Enter 换行</span
+              ><n-button
+                v-if="busy"
+                circle
+                type="error"
+                secondary
+                aria-label="停止生成"
+                @click="stopRun"
+                ><template #icon
+                  ><n-icon :component="StopOutline" /></template></n-button
+              ><n-button
+                v-else
+                circle
+                type="primary"
+                :disabled="
+                  !draft.trim() || sending || (!current && !selectedAgentId)
+                "
+                aria-label="发送消息"
+                @click="submit"
+                ><template #icon
+                  ><n-icon :component="ArrowUpOutline" /></template
+              ></n-button>
+            </div>
           </div>
-        </div>
-        <div class="composer-note">
-          Agent 生成的内容可能有误，请核对重要信息。
-        </div>
-      </footer>
+          <div class="composer-note">
+            Agent 生成的内容可能有误，请核对重要信息。
+          </div>
+        </footer>
+      </div>
+      <artifact-viewer
+        v-model:show="artifactsOpen"
+        :artifacts="artifacts"
+        :selected-id="selectedArtifact"
+      />
     </div>
-    <artifact-viewer v-model:show="artifactsOpen" :artifacts="artifacts" />
     <n-modal
       v-model:show="renameOpen"
       preset="card"
