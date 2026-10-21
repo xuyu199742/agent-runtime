@@ -23,6 +23,15 @@ class _Journal:
     async def completed_summary(self, step_id, messages):
         return self.completed.get(step_id)
 
+    async def ensure_working_batch(self, step_id, graph_step, limit):
+        used = {
+            item
+            for item, _ in self.started
+            if item.startswith(f"{self.run_id}:working:{graph_step}:")
+        }
+        if step_id not in used and len(used) >= limit:
+            raise ContextBudgetExceeded("Working Context 压缩轮数不足")
+
     async def start(self, step_id, phase, messages):
         self.started.append((step_id, phase))
         return "execution-1"
@@ -104,6 +113,101 @@ async def test_summary_reuses_completed_journal_result_after_checkpoint_gap(monk
     assert len(journal.started) == 1
     assert journal.started[0][1] == "CONTEXT_SUMMARY"
     assert first == second
+
+
+@pytest.mark.asyncio
+async def test_large_history_uses_durable_summary_batches(monkeypatch):
+    from app.runtime import working_context
+
+    monkeypatch.setattr(working_context, "get_config", lambda: {"metadata": {"langgraph_step": 4}})
+    journal = _Journal()
+    model = _Model()
+    middleware = WorkingContextMiddleware(
+        model=model,
+        journal=journal,
+        soft_limit=100,
+        hard_limit=2000,
+        summary_input_budget=650,
+        max_compaction_rounds=5,
+        fact_refs_loader=_empty_refs,
+    )
+    messages = [
+        message
+        for index in range(5)
+        for message in (
+            HumanMessage(content=f"旧问题{index}" * 25, id=f"u{index}"),
+            AIMessage(content=f"旧答复{index}" * 25, id=f"a{index}"),
+        )
+    ]
+    messages.append(HumanMessage(content="当前问题", id="current"))
+    first = await middleware.abefore_model({"messages": messages}, None)
+    second = await middleware.abefore_model({"messages": messages}, None)
+    assert model.calls > 1
+    assert model.calls == len(journal.started)
+    assert all(":part:" in step_id for step_id, _ in journal.started)
+    assert first == second
+    assert first["messages"][-1] == messages[-1]
+
+
+@pytest.mark.asyncio
+async def test_summary_batches_stop_at_per_step_limit(monkeypatch):
+    from app.runtime import working_context
+
+    monkeypatch.setattr(working_context, "get_config", lambda: {"metadata": {"langgraph_step": 4}})
+    journal = _Journal()
+    model = _Model()
+    middleware = WorkingContextMiddleware(
+        model=model,
+        journal=journal,
+        soft_limit=100,
+        hard_limit=2000,
+        summary_input_budget=650,
+        max_compaction_rounds=1,
+        fact_refs_loader=_empty_refs,
+    )
+    messages = [
+        message
+        for index in range(5)
+        for message in (
+            HumanMessage(content=f"旧问题{index}" * 25, id=f"u{index}"),
+            AIMessage(content=f"旧答复{index}" * 25, id=f"a{index}"),
+        )
+    ]
+    messages.append(HumanMessage(content="当前问题", id="current"))
+    with pytest.raises(ContextBudgetExceeded, match="压缩轮数"):
+        await middleware.abefore_model({"messages": messages}, None)
+    assert model.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_working_batch_limit_allows_next_graph_step(monkeypatch):
+    from app.runtime import working_context
+
+    step = {"value": 4}
+    monkeypatch.setattr(
+        working_context, "get_config", lambda: {"metadata": {"langgraph_step": step["value"]}}
+    )
+    journal = _Journal()
+    middleware = WorkingContextMiddleware(
+        model=_Model(),
+        journal=journal,
+        soft_limit=70,
+        hard_limit=1000,
+        summary_input_budget=1000,
+        max_compaction_rounds=1,
+        fact_refs_loader=_empty_refs,
+    )
+    messages = [
+        HumanMessage(content="更早目标" * 50, id="u0"),
+        AIMessage(content="已确认", id="a0"),
+        HumanMessage(content="旧目标" * 50, id="u1"),
+        AIMessage(content="已分析", id="a1"),
+        HumanMessage(content="当前问题", id="u2"),
+    ]
+    await middleware.abefore_model({"messages": messages}, None)
+    step["value"] = 5
+    await middleware.abefore_model({"messages": messages}, None)
+    assert len(journal.started) == 2
 
 
 async def _empty_refs():

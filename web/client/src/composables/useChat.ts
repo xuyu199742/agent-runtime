@@ -142,7 +142,8 @@ export function useChat() {
             await syncRun(runId);
         },
         onRetry: () => {
-          if (!signal.aborted) reconnecting.value = true;
+          if (!signal.aborted && run.value?.status !== "WAITING")
+            reconnecting.value = true;
         },
         signal,
       }).catch((cause) => {
@@ -294,13 +295,7 @@ export function useChat() {
     );
     await loadApprovals(run.value.id);
     await syncRun(run.value.id);
-    if (
-      import.meta.env.VITE_AGUI_ENABLED === "true" &&
-      run.value &&
-      !isTerminal(run.value.status) &&
-      run.value.status !== "WAITING"
-    )
-      connectRun(run.value.id);
+    // 审批后的同一条 AG-UI 订阅会凭游标重连，避免 Worker 尚未领取时丢失恢复事件。
   }
 
   async function rename(title: string): Promise<void> {

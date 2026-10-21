@@ -21,13 +21,15 @@ def _sse(event: dict, event_id: str | None = None) -> str:
     return f"{prefix}event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _cursor(after: str | None) -> tuple[int, int]:
+def _cursor(after: str | None) -> tuple[int, bool, int]:
     if after is None:
-        return 0, -1
+        return 0, False, -1
     parts = after.split(":")
-    if len(parts) != 2 or any(not part.isdecimal() for part in parts):
-        raise HTTPException(422, detail="AG-UI Event ID 无效")
-    return int(parts[0]), int(parts[1])
+    if len(parts) == 2 and all(part.isdecimal() for part in parts):
+        return int(parts[0]), False, int(parts[1])
+    if len(parts) == 3 and parts[1] == "t" and parts[0].isdecimal() and parts[2].isdecimal():
+        return int(parts[0]), True, int(parts[2])
+    raise HTTPException(422, detail="AG-UI Event ID 无效")
 
 
 @router.get("/{run_id}/ag-ui/events")
@@ -42,11 +44,12 @@ async def stream_agui(
     run = await runs.visible(run_id, user.id)
     thread_id = run.session_id
     await runs.release_read()
-    cursor_sequence, cursor_index = _cursor(last_event_id or after)
+    cursor_sequence, cursor_terminal, cursor_index = _cursor(last_event_id or after)
 
     async def generate():
-        nonlocal cursor_sequence, cursor_index
-        yield _sse(run_started(thread_id, run_id))
+        nonlocal cursor_sequence, cursor_terminal, cursor_index
+        if cursor_sequence == 0:
+            yield _sse(run_started(thread_id, run_id))
         while not await request.is_disconnected():
             async with session_factory() as db:
                 current = await db.get(Run, run_id)
@@ -89,14 +92,30 @@ async def stream_agui(
             for row in rows:
                 if row.sequence < cursor_sequence:
                     continue
+                replayed_terminal = row.sequence == cursor_sequence and cursor_terminal
                 mapped = map_trace_event(row)
+                # 旧版 WAITING 终态用下一条 trace 的 0 号索引；升级后允许审批事件重放一次。
+                legacy_approval_overlap = (
+                    row.sequence == cursor_sequence
+                    and not cursor_terminal
+                    and cursor_index == 0
+                    and row.event_type in {"approval.approved", "approval.rejected"}
+                )
                 for index, event in enumerate(mapped):
-                    if row.sequence == cursor_sequence and index <= cursor_index:
+                    if replayed_terminal or (
+                        row.sequence == cursor_sequence
+                        and index <= cursor_index
+                        and not legacy_approval_overlap
+                    ):
                         continue
                     yield _sse(event, f"{row.sequence}:{index}")
-                cursor_sequence, cursor_index = row.sequence, max(len(mapped) - 1, 0)
+                if not replayed_terminal:
+                    cursor_sequence, cursor_terminal, cursor_index = (
+                        row.sequence,
+                        False,
+                        max(len(mapped) - 1, 0),
+                    )
             if status in TERMINAL and (not rows or rows[-1].sequence >= trace_sequence):
-                terminal_sequence = trace_sequence + 1
                 terminal = terminal_events(
                     thread_id,
                     run_id,
@@ -116,9 +135,13 @@ async def stream_agui(
                     ],
                 )
                 for index, event in enumerate(terminal):
-                    if terminal_sequence == cursor_sequence and index <= cursor_index:
+                    if (
+                        trace_sequence == cursor_sequence
+                        and cursor_terminal
+                        and index <= cursor_index
+                    ):
                         continue
-                    yield _sse(event, f"{terminal_sequence}:{index}")
+                    yield _sse(event, f"{trace_sequence}:t:{index}")
                 return
             if len(rows) < 100:
                 await asyncio.sleep(0.5)

@@ -75,6 +75,14 @@ def validate_tool_pairs(messages: tuple[WorkingMessage, ...]) -> bool:
     return True
 
 
+def complete_groups(messages: tuple[WorkingMessage, ...]) -> tuple[tuple[WorkingMessage, ...], ...]:
+    """按完整交互组切分摘要源，Tool 调用和结果必须留在同一批。"""
+    groups = _groups(messages)
+    if any(not group.complete for group in groups):
+        raise ValueError("Working Context 摘要源包含未完成的 Tool batch")
+    return tuple(group.messages for group in groups)
+
+
 def _estimate(messages: tuple[WorkingMessage, ...]) -> int:
     return sum(
         approximate_tokens(message.content) + approximate_tokens(message.tool_call_payload) + 4

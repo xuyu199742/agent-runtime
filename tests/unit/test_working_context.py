@@ -5,6 +5,7 @@ import pytest
 from app.context.working import (
     ToolFactRef,
     WorkingMessage,
+    complete_groups,
     plan_working_context,
     validate_tool_pairs,
 )
@@ -72,6 +73,10 @@ def test_summary_selection_uses_complete_old_groups_only():
     assert plan.action == "SUMMARIZE"
     assert plan.summarize_ids == ("u-1", "a-1", "t-1", "t-2")
     assert plan.messages == messages
+    assert complete_groups(plan.summary_source) == (
+        (messages[0],),
+        (messages[1], messages[2], messages[3]),
+    )
 
 
 def test_hard_limit_fails_when_only_protected_content_is_large():

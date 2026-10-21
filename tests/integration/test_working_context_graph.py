@@ -19,6 +19,9 @@ class _Journal:
     async def completed_summary(self, step_id, messages):
         return None
 
+    async def ensure_working_batch(self, step_id, graph_step, limit):
+        return None
+
     async def start(self, step_id, phase, messages):
         return "execution"
 
