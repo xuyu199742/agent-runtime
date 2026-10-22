@@ -57,3 +57,9 @@ class PolicyDenied(ContextRunError):
     def __init__(self, reason_code: str):
         super().__init__(reason_code)
         self.code = reason_code
+
+
+class ReasoningContextMissing(ContextRunError):
+    """旧工具检查点未保留供应商要求的推理字段，无法安全续调。"""
+
+    code = "REASONING_CONTEXT_MISSING"

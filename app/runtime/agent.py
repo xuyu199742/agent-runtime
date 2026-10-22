@@ -84,6 +84,7 @@ class LangChainAgentRuntime:
             context_schema=RunContext,
             checkpointer=checkpointer,
         )
+        self.model_call_journal = model_call_journal
         self.has_checkpointer = checkpointer is not None
         self.sync_durability = working_context_middleware is not None
 
@@ -147,6 +148,8 @@ class LangChainAgentRuntime:
                         step_id = f"{run_id}:model:{model_step}"
                         # 同一 logical step 的新 started 表示重试；消费者应清空旧 partial。
                         await emit("model.started", {"step_id": step_id})
+                    if self.model_call_journal is not None:
+                        await self.model_call_journal.stream(step_id, message)
                     if isinstance(message.content, str) and message.content:
                         await emit("model.delta", {"step_id": step_id, "text": message.content})
             elif mode == "updates":

@@ -24,7 +24,7 @@ async def test_completed_tool_without_result_fails_closed():
     request = SimpleNamespace(tool_call={"name": "echo", "id": "call", "args": {"text": "x"}})
 
     class Store:
-        async def start(self, *_args):
+        async def start(self, *_args, **_kwargs):
             return SimpleNamespace(status="COMPLETED", result_content=None)
 
         async def finish(self, *_args):

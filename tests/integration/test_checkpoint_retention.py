@@ -57,7 +57,8 @@ async def test_terminal_run_checkpoint_is_pruned_after_retention(monkeypatch):
                 await db.execute(
                     update(Run)
                     .where(Run.id == run_id)
-                    .values(updated_at=datetime.now(UTC) - timedelta(hours=25))
+                    # 进入本轮清理的首个批次，避免受共享测试库旧记录积压影响。
+                    .values(updated_at=datetime(2000, 1, 1, tzinfo=UTC))
                 )
                 await db.commit()
             monkeypatch.setattr(worker, "session_factory", factory)

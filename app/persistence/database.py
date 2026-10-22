@@ -415,6 +415,20 @@ class RunTraceEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunActivitySnapshot(Base):
+    """有界用户活动正文，trace 仅持有引用。"""
+
+    __tablename__ = "run_activity_snapshots"
+    __table_args__ = (Index("ix_run_activity_run_sequence", "run_id", "sequence"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    activity_id: Mapped[str] = mapped_column(String(250))
+    activity_type: Mapped[str] = mapped_column(String(30))
+    content: Mapped[dict] = mapped_column(JSONB)
+
+
 class ModelExecution(Base):
     __tablename__ = "model_executions"
     __table_args__ = (

@@ -84,7 +84,13 @@ async def messages(
     rows = await conversation.messages(conversation_id, user.id, before, limit)
     return [
         MessageOut.model_validate(
-            {"id": row.id, "role": row.role, "content": row.content, "created_at": row.created_at}
+            {
+                "id": row.id,
+                "role": row.role,
+                "content": row.content,
+                "created_at": row.created_at,
+                "run_id": getattr(row, "run_id", None),
+            }
         )
         for row in rows
     ]

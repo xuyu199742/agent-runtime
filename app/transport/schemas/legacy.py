@@ -36,9 +36,24 @@ class ModelIn(BaseModel):
             "temperature",
             "context_window",
             "max_output_tokens",
+            "thinking_mode",
+            "reasoning_effort",
         }
         if set(self.config) - allowed:
             raise ValueError("模型 config 包含不支持的配置项")
+        thinking = self.config.get("thinking_mode", "default")
+        if not isinstance(thinking, str) or thinking not in {"default", "enabled", "disabled"}:
+            raise ValueError("thinking_mode 必须是 default、enabled 或 disabled")
+        if self.provider == "openai" and thinking != "default":
+            raise ValueError("OpenAI 模型请使用 reasoning_effort 配置推理")
+        effort = self.config.get("reasoning_effort")
+        if effort is not None and (
+            not isinstance(effort, str)
+            or effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+        ):
+            raise ValueError("reasoning_effort 无效")
+        if thinking == "enabled" and effort == "none":
+            raise ValueError("开启推理模式时 reasoning_effort 不能为 none")
         for key in ("context_window", "max_output_tokens"):
             if key not in self.config:
                 raise ValueError(f"模型配置必须包含 {key}")

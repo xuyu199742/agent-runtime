@@ -22,15 +22,15 @@ export function applyActivity(items: Activity[], event: AguiEvent): Activity[] {
     !event.activityType
   )
     return items;
-  const next = items.filter((item) => item.id !== event.messageId);
-  return [
-    ...next,
-    {
-      id: event.messageId,
-      type: event.activityType,
-      content: event.content || {},
-    },
-  ];
+  // 模型文本与推理都是累计快照，直接替换；重放不追加，也不改变步骤顺序。
+  const activity: Activity = {
+    id: event.messageId,
+    type: event.activityType,
+    content: event.content || {},
+  };
+  const index = items.findIndex((item) => item.id === event.messageId);
+  if (index < 0) return [...items, activity];
+  return items.map((item, position) => (position === index ? activity : item));
 }
 
 function waitBeforeRetry(signal: AbortSignal): Promise<void> {

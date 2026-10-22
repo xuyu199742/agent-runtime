@@ -7,8 +7,17 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
-from app.persistence.database import Approval, Message, Run, RunTraceEvent, session_factory
-from app.transport.agui import map_trace_event, run_started, terminal_events
+from app.persistence.database import (
+    Approval,
+    Message,
+    Run,
+    RunActivitySnapshot,
+    RunTraceEvent,
+    ToolExecution,
+    session_factory,
+)
+from app.persistence.repositories.activity import legacy_tool_content
+from app.transport.agui import activity, map_trace_event, run_started, terminal_events
 from app.transport.http.common import Runs
 from app.transport.http.v1.dependencies import CurrentUser
 
@@ -66,6 +75,47 @@ async def stream_agui(
                         )
                     ).all()
                 )
+                snapshot_ids = [row.ref_id for row in rows if row.ref_type == "activity_snapshot"]
+                snapshots = (
+                    {
+                        item.id: item
+                        for item in await db.scalars(
+                            select(RunActivitySnapshot).where(
+                                RunActivitySnapshot.run_id == run_id,
+                                RunActivitySnapshot.id.in_(snapshot_ids),
+                            )
+                        )
+                    }
+                    if snapshot_ids
+                    else {}
+                )
+                tool_refs = [row.ref_id for row in rows if row.ref_type == "tool_execution"]
+                legacy_tools = (
+                    {
+                        tool.id: tool
+                        for tool in await db.scalars(
+                            select(ToolExecution).where(
+                                ToolExecution.run_id == run_id, ToolExecution.id.in_(tool_refs)
+                            )
+                        )
+                    }
+                    if tool_refs
+                    else {}
+                )
+                tool_snapshot_ids = (
+                    set(
+                        await db.scalars(
+                            select(RunActivitySnapshot.activity_id)
+                            .where(
+                                RunActivitySnapshot.run_id == run_id,
+                                RunActivitySnapshot.activity_type == "tool",
+                            )
+                            .distinct()
+                        )
+                    )
+                    if tool_refs
+                    else set()
+                )
                 answer = (
                     await db.get(Message, current.answer_message_id)
                     if current.answer_message_id
@@ -93,7 +143,27 @@ async def stream_agui(
                 if row.sequence < cursor_sequence:
                     continue
                 replayed_terminal = row.sequence == cursor_sequence and cursor_terminal
-                mapped = map_trace_event(row)
+                snapshot = snapshots.get(row.ref_id)
+                mapped = (
+                    [activity(snapshot.activity_id, snapshot.activity_type, snapshot.content)]
+                    if snapshot is not None
+                    else map_trace_event(row)
+                )
+                # 新工具记录已有正文快照，避免旧的空状态覆盖累计内容。
+                if row.ref_type == "tool_execution":
+                    call_id = (row.data or {}).get("tool_call_id")
+                    tool = legacy_tools.get(row.ref_id)
+                    if tool is not None:
+                        call_id = tool.tool_call_id
+                    if f"tool:{call_id}" in tool_snapshot_ids:
+                        mapped = [event for event in mapped if event["type"] != "ACTIVITY_SNAPSHOT"]
+                    elif tool is not None:
+                        mapped = [
+                            activity(f"tool:{call_id}", "tool", legacy_tool_content(tool))
+                            if event["type"] == "ACTIVITY_SNAPSHOT"
+                            else event
+                            for event in mapped
+                        ]
                 # 旧版 WAITING 终态用下一条 trace 的 0 号索引；升级后允许审批事件重放一次。
                 legacy_approval_overlap = (
                     row.sequence == cursor_sequence

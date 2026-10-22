@@ -30,6 +30,7 @@ export interface Conversation {
 
 export interface Message {
   id: string;
+  run_id?: string | null;
   role: string;
   content: string;
   created_at: string;
